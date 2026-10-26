@@ -140,7 +140,7 @@ const minSearchRunes = 2
 // stored Latin spelling ("Yorick 💀"). Digraphs (ж→zh, я→ya, …) expand to two
 // runes. Soft/hard signs are silent and drop out. This is PHONETIC, not the
 // visual homoglyph squeeze the sending side applies (see the fit package in
-// meshcore-companion).
+// meshcore-kit).
 var cyrPhonetic = map[rune]string{
 	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
 	'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",

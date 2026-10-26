@@ -62,7 +62,7 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
 
 ## Related projects
 
-- [meshcore-companion](https://github.com/stempit/meshcore-companion) — the
+- [meshcore-kit](https://github.com/stempit/meshcore-kit) — the
   shared app runtime built on this driver: connection selection, startup
   stored-message sync, a live inbox with cursors, keepalive/reconnect — plus
   the 140-byte message fitter.

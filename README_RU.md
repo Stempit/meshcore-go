@@ -65,7 +65,7 @@ client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
 
 ## Родственные проекты
 
-- [meshcore-companion](https://github.com/stempit/meshcore-companion) — общий
+- [meshcore-kit](https://github.com/stempit/meshcore-kit) — общий
   рантайм приложений поверх драйвера: выбор подключения, стартовая синхронизация
   сохранённых сообщений, живой инбокс с курсорами, keepalive/реконнект — плюс
   упаковщик сообщений в 140 байт.
