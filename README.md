@@ -7,7 +7,7 @@
 `meshcore-go` connects to a [MeshCore](https://meshcore.io) radio device from
 Go, speaks the companion-device wire protocol over **Bluetooth LE** (default)
 or **USB/UART serial**, and hands you a client with contacts, channels, message
-history, and delivery-confirmed sends. It is the radio layer of the meshbot
+history, and delivery-confirmed sends. It is the radio layer of the meshcore
 family — bots, HTTP gateways and voice bridges are separate projects built on
 top of this driver.
 
@@ -66,7 +66,7 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
   shared app runtime built on this driver: connection selection, startup
   stored-message sync, a live inbox with cursors, keepalive/reconnect — plus
   the 140-byte message fitter.
-- [meshbot](https://github.com/stempit/meshbot) — the full-featured mesh chat
+- [meshcore-go-bot](https://github.com/stempit/meshcore-go-bot) — the full-featured mesh chat
   bot (commands, games, Telegram/MQTT bridges).
 - [meshcore-http-gateway](https://github.com/stempit/meshcore-http-gateway) —
   the mesh behind a plain HTTP API.

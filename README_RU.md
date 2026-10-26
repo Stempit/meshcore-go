@@ -8,7 +8,7 @@
 из Go, говорит по протоколу companion-устройства через **Bluetooth LE** (по
 умолчанию) или **USB/UART serial** и отдаёт клиент с контактами, каналами,
 историей сообщений и отправкой с подтверждением доставки. Это радио-слой
-семейства meshbot — боты, HTTP-шлюзы и голосовые мосты живут в отдельных
+семейства meshcore — боты, HTTP-шлюзы и голосовые мосты живут в отдельных
 проектах поверх этого драйвера.
 
 ## Установка
@@ -69,7 +69,7 @@ client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
   рантайм приложений поверх драйвера: выбор подключения, стартовая синхронизация
   сохранённых сообщений, живой инбокс с курсорами, keepalive/реконнект — плюс
   упаковщик сообщений в 140 байт.
-- [meshbot](https://github.com/stempit/meshbot) — полноценный чат-бот в меше
+- [meshcore-go-bot](https://github.com/stempit/meshcore-go-bot) — полноценный чат-бот в меше
   (команды, игры, мосты Telegram/MQTT).
 - [meshcore-http-gateway](https://github.com/stempit/meshcore-http-gateway) —
   меш за простым HTTP API.
