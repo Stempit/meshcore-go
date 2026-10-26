@@ -17,6 +17,15 @@
 go get github.com/stempit/meshcore-go
 ```
 
+**Требования:** Go по версии из `go.mod`. Для BLE нужен Bluetooth-адаптер;
+для serial — доступ к устройству (в Linux добавьте себя в группу `dialout`,
+например `sudo usermod -aG dialout $USER`). В Linux BLE-сканированию нужен
+`CAP_NET_RAW` — запускайте через `sudo` или выдайте бинарнику один раз:
+
+```sh
+sudo setcap cap_net_raw,cap_net_admin+eip ./your-app
+```
+
 ## Быстрый старт
 
 См. [examples/basic](examples/basic/main.go): подключение по BLE, отправка DM

@@ -17,6 +17,15 @@ top of this driver.
 go get github.com/stempit/meshcore-go
 ```
 
+**Requirements:** Go per `go.mod`. For BLE, the host needs a Bluetooth adapter;
+for serial, access to the device node (on Linux add yourself to the `dialout`
+group, e.g. `sudo usermod -aG dialout $USER`). On Linux, BLE scanning also needs
+`CAP_NET_RAW` — either run via `sudo`, or grant the binary once:
+
+```sh
+sudo setcap cap_net_raw,cap_net_admin+eip ./your-app
+```
+
 ## Quick start
 
 See [examples/basic](examples/basic/main.go): connect over BLE, send a DM with

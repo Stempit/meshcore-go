@@ -282,17 +282,9 @@ func (c *MeshCoreClient) parseChannelMessageV3(data []byte) {
 // (low 6 bits). See Packet.h getPathHashCount().
 func pathHashCount(pathLen byte) int { return int(pathLen & 0x3F) }
 
-// PathHashCount is the exported form of pathHashCount for callers outside this
-// package (e.g. detecting a node's routing hash size from Contact.PathLength).
-func PathHashCount(pathLen byte) int { return pathHashCount(pathLen) }
-
 // pathHashSize returns the bytes-per-hop encoded in a MeshCore path_len byte
 // (top 2 bits + 1 → 1, 2 or 3). See Packet.h getPathHashSize().
 func pathHashSize(pathLen byte) int { return int((pathLen>>6)&0x03) + 1 }
-
-// PathHashSize is the exported form of pathHashSize for callers outside this
-// package (e.g. detecting whether a node still uses 1-byte routing hashes).
-func PathHashSize(pathLen byte) int { return pathHashSize(pathLen) }
 
 // pathByteLen returns the number of meaningful path bytes for an encoded
 // path_len byte: hash_count × hash_size.
