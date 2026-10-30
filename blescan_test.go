@@ -58,17 +58,17 @@ func TestDeviceMatches(t *testing.T) {
 	tests := []struct {
 		name string
 		dev  BLEDevice
-		opts BLEScanOptions
+		opts bleScanOptions
 		want bool
 	}{
-		{"no filter matches anything", device("aa:11", "MeshCore-AB12", -50), BLEScanOptions{}, true},
-		{"name match", device("aa:11", "MeshCore-AB12", -50), BLEScanOptions{Name: "MeshCore-AB12"}, true},
-		{"name is case-insensitive", device("aa:11", "MeshCore-AB12", -50), BLEScanOptions{Name: "meshcore-ab12"}, true},
-		{"name mismatch", device("aa:11", "MeshCore-AB12", -50), BLEScanOptions{Name: "MeshCore-CD34"}, false},
-		{"address match", device("AA:11", "MeshCore-AB12", -50), BLEScanOptions{Address: "aa:11"}, true},
-		{"address mismatch", device("AA:11", "MeshCore-AB12", -50), BLEScanOptions{Address: "aa:22"}, false},
-		{"name and address both match", device("AA:11", "MeshCore-AB12", -50), BLEScanOptions{Name: "MeshCore-AB12", Address: "aa:11"}, true},
-		{"name matches but address does not", device("AA:11", "MeshCore-AB12", -50), BLEScanOptions{Name: "MeshCore-AB12", Address: "aa:22"}, false},
+		{"no filter matches anything", device("aa:11", "MeshCore-AB12", -50), bleScanOptions{}, true},
+		{"name match", device("aa:11", "MeshCore-AB12", -50), bleScanOptions{Name: "MeshCore-AB12"}, true},
+		{"name is case-insensitive", device("aa:11", "MeshCore-AB12", -50), bleScanOptions{Name: "meshcore-ab12"}, true},
+		{"name mismatch", device("aa:11", "MeshCore-AB12", -50), bleScanOptions{Name: "MeshCore-CD34"}, false},
+		{"address match", device("AA:11", "MeshCore-AB12", -50), bleScanOptions{Address: "aa:11"}, true},
+		{"address mismatch", device("AA:11", "MeshCore-AB12", -50), bleScanOptions{Address: "aa:22"}, false},
+		{"name and address both match", device("AA:11", "MeshCore-AB12", -50), bleScanOptions{Name: "MeshCore-AB12", Address: "aa:11"}, true},
+		{"name matches but address does not", device("AA:11", "MeshCore-AB12", -50), bleScanOptions{Name: "MeshCore-AB12", Address: "aa:22"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,24 +81,24 @@ func TestDeviceMatches(t *testing.T) {
 
 func TestMatchesFilter(t *testing.T) {
 	var empty bleCandidates
-	if empty.matchesFilter(BLEScanOptions{Name: "MeshCore-AB12"}) {
+	if empty.matchesFilter(bleScanOptions{Name: "MeshCore-AB12"}) {
 		t.Error("no candidates: filter can never match")
 	}
-	if empty.matchesFilter(BLEScanOptions{}) {
+	if empty.matchesFilter(bleScanOptions{}) {
 		t.Error("no candidates and no filter: must not report a hit")
 	}
 
 	c := populated()
-	if c.matchesFilter(BLEScanOptions{}) {
+	if c.matchesFilter(bleScanOptions{}) {
 		t.Error("no filter configured: must report false so the scan runs to its settle/timeout decision")
 	}
-	if !c.matchesFilter(BLEScanOptions{Name: "MESHCORe-cd34"}) {
+	if !c.matchesFilter(bleScanOptions{Name: "MESHCORe-cd34"}) {
 		t.Error("a candidate matching the name filter exists")
 	}
-	if !c.matchesFilter(BLEScanOptions{Address: "AA:AA:AA:00:00:03"}) {
+	if !c.matchesFilter(bleScanOptions{Address: "AA:AA:AA:00:00:03"}) {
 		t.Error("a candidate matching the address filter exists")
 	}
-	if c.matchesFilter(BLEScanOptions{Name: "MeshCore-XXXX"}) {
+	if c.matchesFilter(bleScanOptions{Name: "MeshCore-XXXX"}) {
 		t.Error("no candidate matches this name")
 	}
 }
@@ -106,7 +106,7 @@ func TestMatchesFilter(t *testing.T) {
 func TestPickWithoutFilterSelectsStrongestSignal(t *testing.T) {
 	c := populated()
 
-	dev, ambiguous, err := c.pick(BLEScanOptions{})
+	dev, ambiguous, err := c.pick(bleScanOptions{})
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestPickWithoutFilterSelectsStrongestSignal(t *testing.T) {
 	// A single device is not ambiguous — no warning needed.
 	var single bleCandidates
 	single.observe("aa:aa:aa:00:00:02", "MeshCore-CD34", -70)
-	_, ambiguous, err = single.pick(BLEScanOptions{})
+	_, ambiguous, err = single.pick(bleScanOptions{})
 	if err != nil {
 		t.Fatalf("pick single: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPickWithoutFilterSelectsStrongestSignal(t *testing.T) {
 func TestPickWithFilterIsNeverAmbiguous(t *testing.T) {
 	c := populated()
 
-	dev, ambiguous, err := c.pick(BLEScanOptions{Name: "MeshCore-EF56"})
+	dev, ambiguous, err := c.pick(bleScanOptions{Name: "MeshCore-EF56"})
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestPickWithFilterIsNeverAmbiguous(t *testing.T) {
 func TestPickFilterNoMatchListsSeenDevices(t *testing.T) {
 	c := populated()
 
-	_, _, err := c.pick(BLEScanOptions{Name: "MeshCore-XXXX"})
+	_, _, err := c.pick(bleScanOptions{Name: "MeshCore-XXXX"})
 	if err == nil {
 		t.Fatal("pick must fail when nothing matches the filter")
 	}
@@ -160,7 +160,7 @@ func TestPickFilterNoMatchListsSeenDevices(t *testing.T) {
 
 func TestPickEmptyCandidates(t *testing.T) {
 	var c bleCandidates
-	_, _, err := c.pick(BLEScanOptions{})
+	_, _, err := c.pick(bleScanOptions{})
 	if err == nil || !strings.Contains(err.Error(), "no MeshCore devices found") {
 		t.Fatalf("pick on empty candidates = %v, want a no-devices error", err)
 	}
@@ -176,7 +176,7 @@ func TestListAndPickAreDeterministicOnEqualRSSI(t *testing.T) {
 		t.Errorf("list = %+v, want ties broken by address (…0001 first)", got)
 	}
 
-	dev, _, err := c.pick(BLEScanOptions{})
+	dev, _, err := c.pick(bleScanOptions{})
 	if err != nil {
 		t.Fatalf("pick: %v", err)
 	}

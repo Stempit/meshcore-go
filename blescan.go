@@ -41,11 +41,11 @@ type BLEDevice struct {
 	RSSI int16
 }
 
-// BLEScanOptions narrows down which MeshCore device to connect to when
+// bleScanOptions narrows down which MeshCore device to connect to when
 // several are advertising. Name and Address are both optional; when both are
 // set a device must match both (they identify the same device). The zero
 // value accepts any MeshCore device, picking the strongest signal.
-type BLEScanOptions struct {
+type bleScanOptions struct {
 	// Name is the exact advertised local name, e.g. "MeshCore-AB12"
 	// (case-insensitive). Empty = any.
 	Name string
@@ -56,9 +56,9 @@ type BLEScanOptions struct {
 	Timeout time.Duration
 }
 
-// applyBLEOptions folds option callbacks into a BLEScanOptions value.
-func applyBLEOptions(opts []BLEOption) BLEScanOptions {
-	var scanOpts BLEScanOptions
+// applyBLEOptions folds option callbacks into a bleScanOptions value.
+func applyBLEOptions(opts []BLEOption) bleScanOptions {
+	var scanOpts bleScanOptions
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&scanOpts)
@@ -69,26 +69,26 @@ func applyBLEOptions(opts []BLEOption) BLEScanOptions {
 
 // BLEOption customises how CreateClient and ScanDevices scan for and select
 // a MeshCore BLE device.
-type BLEOption func(*BLEScanOptions)
+type BLEOption func(*bleScanOptions)
 
 // WithDeviceName pins the device by its exact advertised name
 // (e.g. "MeshCore-AB12"): with several MeshCore devices in range the choice
 // becomes deterministic, and the scan stops as soon as the named device is
 // seen. Empty (default) accepts any MeshCore device.
 func WithDeviceName(name string) BLEOption {
-	return func(o *BLEScanOptions) { o.Name = name }
+	return func(o *bleScanOptions) { o.Name = name }
 }
 
 // WithDeviceAddress pins the device by its platform address — a MAC address
 // on Linux/Windows, a CoreBluetooth UUID on macOS. Run ScanDevices to see
 // the values as this platform reports them.
 func WithDeviceAddress(addr string) BLEOption {
-	return func(o *BLEScanOptions) { o.Address = addr }
+	return func(o *bleScanOptions) { o.Address = addr }
 }
 
 // WithScanTimeout bounds the BLE scan window (default 10s).
 func WithScanTimeout(d time.Duration) BLEOption {
-	return func(o *BLEScanOptions) { o.Timeout = d }
+	return func(o *bleScanOptions) { o.Timeout = d }
 }
 
 // ScanDevices scans for advertising MeshCore devices and returns one entry
@@ -115,7 +115,7 @@ func ScanDevices(opts ...BLEOption) ([]BLEDevice, error) {
 // whichever comes first. The second return value maps each candidate's
 // AddrString to the platform Address value for Connect. The adapter must
 // already be enabled.
-func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts BLEScanOptions) (bleCandidates, map[string]bluetooth.Address, error) {
+func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts bleScanOptions) (bleCandidates, map[string]bluetooth.Address, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultScanTimeout
@@ -130,11 +130,6 @@ func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts BLEScanOptions) (bl
 	)
 	stopScan := func() { stopOnce.Do(func() { adapter.StopScan() }) }
 
-	// newDevice pokes the coordinator whenever a device is seen for the first
-	// time. Buffered size 1: events coalesce, and the BLE callback must never
-	// block once the coordinator has stopped listening.
-	newDevice := make(chan struct{}, 1)
-
 	err := adapter.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
 		name := result.LocalName()
 		if !strings.HasPrefix(name, meshcoreNamePrefix) {
@@ -143,19 +138,12 @@ func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts BLEScanOptions) (bl
 		key := result.Address.String()
 		mu.Lock()
 		addrs[key] = result.Address
-		isNew := cands.observe(key, name, result.RSSI)
-		if isNew {
+		if cands.observe(key, name, result.RSSI) {
 			lastNew = time.Now()
 		}
 		hit := cands.matchesFilter(opts)
 		mu.Unlock()
 
-		if isNew {
-			select {
-			case newDevice <- struct{}{}:
-			default:
-			}
-		}
 		if hit {
 			// The filtered target is deterministic — no need to keep
 			// scanning for other candidates.
@@ -170,15 +158,14 @@ func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts BLEScanOptions) (bl
 	// Coordinator: poll the accumulated candidates and stop the scan once
 	// something new has been seen and gone quiet for scanSettleDelay, or at
 	// the timeout. Polling (instead of timer resets from the callback) keeps
-	// all timer state on this goroutine.
+	// all timer state on this goroutine; a new device is picked up by the
+	// next tick, so no extra signalling is needed.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for running := true; running; {
 		select {
-		case <-newDevice:
-			// State is re-read on the next tick.
 		case <-tick.C:
 			mu.Lock()
 			seen, quietSince := len(cands.byKey), lastNew
@@ -199,7 +186,7 @@ func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts BLEScanOptions) (bl
 
 // scanMeshCore scans and then selects one device per opts, returning its
 // platform address and advertised name.
-func scanMeshCore(adapter *bluetooth.Adapter, opts BLEScanOptions) (bluetooth.Address, string, error) {
+func scanMeshCore(adapter *bluetooth.Adapter, opts bleScanOptions) (bluetooth.Address, string, error) {
 	cands, addrs, err := scanMeshCoreCandidates(adapter, opts)
 	if err != nil {
 		return bluetooth.Address{}, "", err
@@ -248,7 +235,7 @@ func (c *bleCandidates) observe(addrString, name string, rssi int16) bool {
 
 // matches reports whether the device satisfies the configured filter. An
 // empty Name/Address matches anything; set fields must all match.
-func (d BLEDevice) matches(opts BLEScanOptions) bool {
+func (d BLEDevice) matches(opts bleScanOptions) bool {
 	if opts.Name != "" && !strings.EqualFold(d.Name, opts.Name) {
 		return false
 	}
@@ -262,7 +249,7 @@ func (d BLEDevice) matches(opts BLEScanOptions) bool {
 // configured Name/Address filter. Without a filter it reports false: the scan
 // then runs to its settle/timeout decision and pick chooses by signal
 // strength instead.
-func (c bleCandidates) matchesFilter(opts BLEScanOptions) bool {
+func (c bleCandidates) matchesFilter(opts bleScanOptions) bool {
 	if opts.Name == "" && opts.Address == "" {
 		return false
 	}
@@ -278,7 +265,7 @@ func (c bleCandidates) matchesFilter(opts BLEScanOptions) bool {
 // candidate wins; without one the strongest overall candidate does and
 // ambiguous is true when more than one device was seen. The error lists every
 // device seen so a mistyped filter is easy to spot.
-func (c bleCandidates) pick(opts BLEScanOptions) (chosen BLEDevice, ambiguous bool, err error) {
+func (c bleCandidates) pick(opts bleScanOptions) (chosen BLEDevice, ambiguous bool, err error) {
 	if len(c.byKey) == 0 {
 		return BLEDevice{}, false, errors.New("no MeshCore devices found")
 	}
