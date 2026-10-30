@@ -52,6 +52,12 @@ func TestObserveDedupesByAddressAndKeepsStrongestRSSI(t *testing.T) {
 	if got := c.byKey["aa:aa:aa:00:00:01"].RSSI; got != -60 {
 		t.Errorf("RSSI = %d, want -60 (name refresh must not weaken it)", got)
 	}
+
+	// A nameless later advertisement must not clobber the known name.
+	c.observe("aa:aa:aa:00:00:01", "", -55)
+	if got := c.byKey["aa:aa:aa:00:00:01"].Name; got != "MeshCore-AB12-renamed" {
+		t.Errorf("Name = %q, want the previous name kept (empty names never clobber)", got)
+	}
 }
 
 func TestDeviceMatches(t *testing.T) {
@@ -79,27 +85,27 @@ func TestDeviceMatches(t *testing.T) {
 	}
 }
 
-func TestMatchesFilter(t *testing.T) {
+func TestCountMatches(t *testing.T) {
 	var empty bleCandidates
-	if empty.matchesFilter(bleScanOptions{Name: "MeshCore-AB12"}) {
-		t.Error("no candidates: filter can never match")
+	if got := empty.countMatches(bleScanOptions{Name: "MeshCore-AB12"}); got != 0 {
+		t.Errorf("no candidates: countMatches = %d, want 0", got)
 	}
-	if empty.matchesFilter(bleScanOptions{}) {
-		t.Error("no candidates and no filter: must not report a hit")
+	if got := empty.countMatches(bleScanOptions{}); got != 0 {
+		t.Errorf("no candidates and no filter: countMatches = %d, want 0", got)
 	}
 
 	c := populated()
-	if c.matchesFilter(bleScanOptions{}) {
-		t.Error("no filter configured: must report false so the scan runs to its settle/timeout decision")
+	if got := c.countMatches(bleScanOptions{}); got != 0 {
+		t.Error("no filter configured: must report 0 so the scan runs to its settle/timeout decision")
 	}
-	if !c.matchesFilter(bleScanOptions{Name: "MESHCORe-cd34"}) {
-		t.Error("a candidate matching the name filter exists")
+	if got := c.countMatches(bleScanOptions{Name: "MESHCORe-cd34"}); got != 1 {
+		t.Errorf("countMatches(name filter) = %d, want 1 (case-insensitive)", got)
 	}
-	if !c.matchesFilter(bleScanOptions{Address: "AA:AA:AA:00:00:03"}) {
-		t.Error("a candidate matching the address filter exists")
+	if got := c.countMatches(bleScanOptions{Address: "AA:AA:AA:00:00:03"}); got != 1 {
+		t.Errorf("countMatches(address filter) = %d, want 1 (case-insensitive)", got)
 	}
-	if c.matchesFilter(bleScanOptions{Name: "MeshCore-XXXX"}) {
-		t.Error("no candidate matches this name")
+	if got := c.countMatches(bleScanOptions{Name: "MeshCore-XXXX"}); got != 0 {
+		t.Errorf("countMatches(unknown name) = %d, want 0", got)
 	}
 }
 

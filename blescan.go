@@ -3,6 +3,7 @@ package meshcore
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -19,10 +20,12 @@ const (
 	// defaultScanTimeout bounds a BLE scan when no timeout is configured.
 	defaultScanTimeout = 10 * time.Second
 	// scanSettleDelay is how long the scan keeps running after the last NEW
-	// device appeared. Re-advertisements from already-seen devices do not
-	// extend it, so a single-device setup connects about as fast as with the
-	// old first-match scan while two devices starting to advertise seconds
-	// apart are still both discovered.
+	// device appeared, so devices that start advertising seconds apart (two
+	// devices powering up together) are all discovered. Re-advertisements
+	// from already-seen devices do not extend it. The cost is paid only on
+	// the unfiltered path: an unfiltered connect waits out this quiet period
+	// even with a single device, while a WithDeviceName/WithDeviceAddress
+	// connect returns as soon as the target is seen.
 	scanSettleDelay = 2 * time.Second
 )
 
@@ -52,7 +55,8 @@ type bleScanOptions struct {
 	// Address is the platform address — MAC on Linux/Windows, CoreBluetooth
 	// UUID on macOS (case-insensitive). Empty = any.
 	Address string
-	// Timeout bounds the scan window; 0 uses defaultScanTimeout.
+	// Timeout bounds the scan window; non-positive values use
+	// defaultScanTimeout.
 	Timeout time.Duration
 }
 
@@ -68,7 +72,8 @@ func applyBLEOptions(opts []BLEOption) bleScanOptions {
 }
 
 // BLEOption customises how CreateClient and ScanDevices scan for and select
-// a MeshCore BLE device.
+// a MeshCore BLE device. The option set is closed by design: behaviour is
+// configured through the With* functions of this package.
 type BLEOption func(*bleScanOptions)
 
 // WithDeviceName pins the device by its exact advertised name
@@ -95,7 +100,9 @@ func WithScanTimeout(d time.Duration) BLEOption {
 // per device found, strongest signal first. Use it to discover the Name and
 // AddrString values to configure for CreateClient. The scan ends after
 // scanSettleDelay without a new device or at the timeout
-// (WithScanTimeout, default 10s) — whichever comes first.
+// (WithScanTimeout, default 10s) — whichever comes first. With a filter
+// configured the scan stops at the first match, so the returned list may be
+// partial.
 func ScanDevices(opts ...BLEOption) ([]BLEDevice, error) {
 	scanOpts := applyBLEOptions(opts)
 	adapter := bluetooth.DefaultAdapter
@@ -130,58 +137,82 @@ func scanMeshCoreCandidates(adapter *bluetooth.Adapter, opts bleScanOptions) (bl
 	)
 	stopScan := func() { stopOnce.Do(func() { adapter.StopScan() }) }
 
-	err := adapter.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
-		name := result.LocalName()
-		if !strings.HasPrefix(name, meshcoreNamePrefix) {
-			return
-		}
-		key := result.Address.String()
-		mu.Lock()
-		addrs[key] = result.Address
-		if cands.observe(key, name, result.RSSI) {
-			lastNew = time.Now()
-		}
-		hit := cands.matchesFilter(opts)
-		mu.Unlock()
+	// Adapter.Scan blocks its caller until StopScan (every host platform
+	// implementation parks on the stop signal), so it runs in its own
+	// goroutine: the scan must be stoppable by the coordinator below, not
+	// only by the callback's filter hit.
+	scanErr := make(chan error, 1)
+	go func() {
+		scanErr <- adapter.Scan(func(_ *bluetooth.Adapter, result bluetooth.ScanResult) {
+			name := result.LocalName()
+			if !strings.HasPrefix(name, meshcoreNamePrefix) {
+				return
+			}
+			key := result.Address.String()
+			mu.Lock()
+			addrs[key] = result.Address
+			if cands.observe(key, name, result.RSSI) {
+				lastNew = time.Now()
+			}
+			hit := cands.countMatches(opts) > 0
+			mu.Unlock()
 
-		if hit {
-			// The filtered target is deterministic — no need to keep
-			// scanning for other candidates.
-			stopScan()
-		}
-	})
-	if err != nil {
-		stopScan()
-		return bleCandidates{}, nil, err
-	}
+			if hit {
+				// The filtered target is deterministic — no need to keep
+				// scanning for other candidates.
+				stopScan()
+			}
+		})
+	}()
 
-	// Coordinator: poll the accumulated candidates and stop the scan once
-	// something new has been seen and gone quiet for scanSettleDelay, or at
-	// the timeout. Polling (instead of timer resets from the callback) keeps
+	// Coordinator: end the scan when something new has been seen and gone
+	// quiet for scanSettleDelay, or at the timeout; a filter hit ends it on
+	// its own (Scan returns after the callback's StopScan). Polling keeps
 	// all timer state on this goroutine; a new device is picked up by the
 	// next tick, so no extra signalling is needed.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
-	for running := true; running; {
+
+	var scanFailed error
+coordinator:
+	for {
 		select {
+		case err := <-scanErr:
+			// Scan returned on its own: a filter hit stopped it, or it never
+			// started (e.g. another scan is already running). Its error, if
+			// any, is the result; do not StopScan here — the callback was
+			// never registered, so stopping could kill a foreign scan.
+			scanFailed = err
+			break coordinator
 		case <-tick.C:
 			mu.Lock()
 			seen, quietSince := len(cands.byKey), lastNew
 			mu.Unlock()
 			if seen > 0 && time.Since(quietSince) >= scanSettleDelay {
-				running = false
+				stopScan()
+				// Join Scan so no further callback can mutate the maps.
+				scanFailed = <-scanErr
+				break coordinator
 			}
 		case <-deadline.C:
-			running = false
+			stopScan()
+			scanFailed = <-scanErr
+			break coordinator
 		}
 	}
-	stopScan()
+	if scanFailed != nil {
+		return bleCandidates{}, nil, scanFailed
+	}
 
+	// Snapshot under the lock: an already-dispatched advertisement can still
+	// reach the callback after Scan has returned, and the callers below read
+	// the maps without the mutex. Entries are copied by value so a late
+	// observe cannot mutate them either.
 	mu.Lock()
 	defer mu.Unlock()
-	return cands, addrs, nil
+	return cands.snapshot(), maps.Clone(addrs), nil
 }
 
 // scanMeshCore scans and then selects one device per opts, returning its
@@ -200,15 +231,21 @@ func scanMeshCore(adapter *bluetooth.Adapter, opts bleScanOptions) (bluetooth.Ad
 		log().Warn("Multiple MeshCore devices found, picking the strongest signal; pass WithDeviceName/WithDeviceAddress to select one explicitly",
 			"devices", cands.listString())
 	}
+	if matched := cands.countMatches(opts); matched > 1 {
+		// Two devices can advertise the identical name (cloned firmware);
+		// without this the resolution would be silent.
+		log().Warn("Several MeshCore devices match the configured filter, picking the strongest signal; add WithDeviceAddress to disambiguate",
+			"matches", matched, "devices", cands.listString())
+	}
 	log().Info("Selected device", "name", dev.Name, "address", dev.AddrString, "rssi", dev.RSSI)
 	return addrs[dev.AddrString], dev.Name, nil
 }
 
 // bleCandidates accumulates MeshCore devices seen during a scan, one entry
 // per address. It is the pure (hardware-free) selection layer: observe feeds
-// it from the scan callback, matchesFilter drives the early stop and pick
-// makes the final choice. All methods are not safe for concurrent use; the
-// scan coordinates access itself.
+// it from the scan callback, countMatches drives the early stop and pick
+// makes the final choice. Methods are not safe for concurrent use; the scan
+// coordinates access itself and hands out snapshot() copies.
 type bleCandidates struct {
 	byKey map[string]*BLEDevice // key: AddrString
 }
@@ -233,6 +270,18 @@ func (c *bleCandidates) observe(addrString, name string, rssi int16) bool {
 	return true
 }
 
+// snapshot copies the candidates so they can be read without the scan's
+// mutex: entries are duplicated by value, so a late observe cannot mutate a
+// snapshot taken earlier.
+func (c bleCandidates) snapshot() bleCandidates {
+	out := bleCandidates{byKey: make(map[string]*BLEDevice, len(c.byKey))}
+	for key, d := range c.byKey {
+		dev := *d
+		out.byKey[key] = &dev
+	}
+	return out
+}
+
 // matches reports whether the device satisfies the configured filter. An
 // empty Name/Address matches anything; set fields must all match.
 func (d BLEDevice) matches(opts bleScanOptions) bool {
@@ -245,20 +294,20 @@ func (d BLEDevice) matches(opts bleScanOptions) bool {
 	return true
 }
 
-// matchesFilter reports whether any accumulated candidate satisfies the
-// configured Name/Address filter. Without a filter it reports false: the scan
-// then runs to its settle/timeout decision and pick chooses by signal
-// strength instead.
-func (c bleCandidates) matchesFilter(opts bleScanOptions) bool {
+// countMatches reports how many accumulated candidates satisfy the configured
+// Name/Address filter. Without a filter it returns 0: the scan then runs to
+// its settle/timeout decision and pick chooses by signal strength instead.
+func (c bleCandidates) countMatches(opts bleScanOptions) int {
 	if opts.Name == "" && opts.Address == "" {
-		return false
+		return 0
 	}
+	n := 0
 	for _, d := range c.byKey {
 		if d.matches(opts) {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // pick chooses one device. With a filter configured the strongest matching
@@ -304,7 +353,9 @@ func (c bleCandidates) list() []BLEDevice {
 func (c bleCandidates) listString() string {
 	parts := make([]string, 0, len(c.byKey))
 	for _, d := range c.list() {
-		parts = append(parts, fmt.Sprintf("%s (%s, %d dBm)", d.Name, d.AddrString, d.RSSI))
+		// %q keeps a hostile advertiser's name (any device in radio range
+		// controls LocalName) from forging log or terminal lines.
+		parts = append(parts, fmt.Sprintf("%q (%s, %d dBm)", d.Name, d.AddrString, d.RSSI))
 	}
 	return strings.Join(parts, ", ")
 }
