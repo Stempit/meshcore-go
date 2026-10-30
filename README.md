@@ -41,6 +41,23 @@ defer client.Disconnect()
 client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
 ```
 
+### BLE device selection
+
+The BLE scan accepts any device advertising the `MeshCore-` prefix. When
+several MeshCore devices are in range it keeps scanning until the picture is
+complete, then picks the strongest signal and logs every candidate — pass an
+option to pin a specific device instead:
+
+```go
+client := meshcore.CreateClient(meshcore.WithDeviceName("MeshCore-AB12"))
+// or by platform address — MAC on Linux/Windows, CoreBluetooth UUID on macOS:
+client := meshcore.CreateClient(meshcore.WithDeviceAddress("AA:BB:CC:DD:EE:FF"))
+```
+
+Run [examples/scan](examples/scan/main.go) to list the devices currently
+advertising with their names, addresses and signal strengths;
+`ScanDevices()` returns the same list programmatically.
+
 ## What it handles
 
 - **Transport** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),

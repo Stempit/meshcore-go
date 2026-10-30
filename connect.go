@@ -1,14 +1,17 @@
 package meshcore
 
 import (
-	"fmt"
-	"strings"
-	"time"
-
 	"tinygo.org/x/bluetooth"
 )
 
-func CreateClient() *MeshCoreClient {
+// CreateClient connects to a MeshCore device over BLE and returns a client
+// that has completed the initial sync. Without options it scans for any
+// device advertising the "MeshCore-" prefix and picks the strongest signal;
+// pass WithDeviceName or WithDeviceAddress to pin a specific device when
+// several are in range. It panics on scan, connect or handshake failure.
+func CreateClient(opts ...BLEOption) *MeshCoreClient {
+	scanOpts := applyBLEOptions(opts)
+
 	adapter := bluetooth.DefaultAdapter
 	if err := adapter.Enable(); err != nil {
 		log().Error("Failed to enable Bluetooth", "error", err)
@@ -16,7 +19,7 @@ func CreateClient() *MeshCoreClient {
 	}
 	log().Info("Bluetooth enabled")
 
-	addr, name, err := scanMeshCore(adapter)
+	addr, name, err := scanMeshCore(adapter, scanOpts)
 	if err != nil {
 		log().Error("Failed to scan MeshCore device", "error", err)
 		panic(err)
@@ -29,32 +32,8 @@ func CreateClient() *MeshCoreClient {
 		log().Error("Failed to connect to device", "error", err)
 		panic(err)
 	}
-	// defer func() {
-	// 	client.Disconnect()
-	// 	log().Info("Disconnected from device")
-	// }()
 
 	runStartupSync(client, selfInfoReceived, "BLE")
 
 	return client
-}
-
-func scanMeshCore(adapter *bluetooth.Adapter) (bluetooth.Address, string, error) {
-	resultChan := make(chan bluetooth.ScanResult)
-	err := adapter.Scan(func(adapter *bluetooth.Adapter, result bluetooth.ScanResult) {
-		if strings.HasPrefix(result.LocalName(), "MeshCore-") {
-			adapter.StopScan()
-			resultChan <- result
-		}
-	})
-	if err != nil {
-		return bluetooth.Address{}, "", err
-	}
-	select {
-	case res := <-resultChan:
-		return res.Address, res.LocalName(), nil
-	case <-time.After(10 * time.Second):
-		adapter.StopScan()
-		return bluetooth.Address{}, "", fmt.Errorf("timeout")
-	}
 }

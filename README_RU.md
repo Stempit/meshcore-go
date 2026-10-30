@@ -42,6 +42,23 @@ defer client.Disconnect()
 client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
 ```
 
+### Выбор BLE-устройства
+
+BLE-скан принимает любое устройство с именем на префикс `MeshCore-`. Когда в
+эфире несколько MeshCore-устройств, скан продолжает работать, пока не соберёт
+их все, затем берёт устройство с самым сильным сигналом и пишет в лог всех
+кандидатов. Чтобы подключаться к конкретному устройству, передайте опцию:
+
+```go
+client := meshcore.CreateClient(meshcore.WithDeviceName("MeshCore-AB12"))
+// или по платформенному адресу — MAC в Linux/Windows, CoreBluetooth UUID в macOS:
+client := meshcore.CreateClient(meshcore.WithDeviceAddress("AA:BB:CC:DD:EE:FF"))
+```
+
+Запустите [examples/scan](examples/scan/main.go), чтобы увидеть устройства в
+эфире с их именами, адресами и уровнем сигнала; `ScanDevices()` возвращает
+тот же список программно.
+
 ## Что умеет
 
 - **Транспорт** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
