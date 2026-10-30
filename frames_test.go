@@ -71,6 +71,83 @@ func TestChannelMessageCallbackSeesFinalMessage(t *testing.T) {
 	}
 }
 
+// rawTXTMSG builds a raw 0x88 RF packet body for a TXT_MSG direct message:
+// [header=direct|TXT_MSG][path_len][path…][dest_hash][src_hash][mac(2)][ct…].
+func rawTXTMSG(senderPrefix []byte, path []byte) []byte {
+	raw := []byte{0x0A, byte(len(path))}
+	raw = append(raw, path...)
+	raw = append(raw, 0x42, senderPrefix[0], 0x01, 0x02) // dest hash, src hash, MAC
+	return append(raw, 0xC3)                             // ciphertext placeholder
+}
+
+// v3DMFrame builds a respCodeContactMsgRecvV3 frame body.
+func v3DMFrame(prefix []byte, timestamp uint32, text string) []byte {
+	data := []byte{respCodeContactMsgRecvV3, 0x20, 0, 0}
+	data = append(data, prefix...)
+	data = append(data, 0x02, txtTypePlain) // path_len metadata, txt_type
+	data = binary.LittleEndian.AppendUint32(data, timestamp)
+	return append(data, text...)
+}
+
+// TestDMCorrelationMatchesTxtMsgRaw pins the DM-side correlation rule: a DM
+// must take its path from its own TXT_MSG raw packet, not from an unrelated
+// packet that merely arrived earlier — the DM counterpart of the channel
+// hash-matched correlation.
+func TestDMCorrelationMatchesTxtMsgRaw(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+	prefix := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+
+	// An unrelated channel packet arrives first — order-only matching would
+	// lend it (and its path) to the DM.
+	c.parseLogRxData(append([]byte{0x88, 0x20, 0xd8}, rawGRPXTX(make([]byte, 16), []byte{0xDD})...))
+	c.parseLogRxData(append([]byte{0x88, 0x20, 0xd8}, rawTXTMSG(prefix, []byte{0xEE})...))
+
+	var got *Message
+	c.onMessage = func(m *Message) {
+		if len(m.PathBytes) != 1 || m.PathBytes[0] != 0xEE || m.PathLength != 1 {
+			t.Errorf("DM took the wrong raw packet's path: path=%x pathLen=%d", m.PathBytes, m.PathLength)
+		}
+		got = m
+	}
+	c.parseContactMessageV3(v3DMFrame(prefix, 1700000001, "hello"))
+
+	if got == nil {
+		t.Fatal("onMessage not called")
+	}
+}
+
+// TestChannelV1CorrelationMatchesPSK pins the V1 channel correlation rule: a
+// channel-A message must take the raw packet of channel A, not the first raw
+// in the pending queue.
+func TestChannelV1CorrelationMatchesPSK(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+	pskA := make([]byte, 16)
+	pskA[0] = 0x0A
+	pskB := make([]byte, 16)
+	pskB[0] = 0x0B
+	c.channels[0] = &Channel{Index: 0, Name: "A", PSK: pskA}
+	c.channels[1] = &Channel{Index: 1, Name: "B", PSK: pskB}
+
+	// Channel B's raw arrives first; the channel-A message must not take it.
+	c.parseLogRxData(append([]byte{0x88, 0x20, 0xd8}, rawGRPXTX(pskB, []byte{0x0B, 0x0B})...))
+	c.parseLogRxData(append([]byte{0x88, 0x20, 0xd8}, rawGRPXTX(pskA, []byte{0x0A, 0x0A, 0x0A})...))
+
+	var got *ChannelMessage
+	c.onChannelMessage = func(m *ChannelMessage) {
+		if len(m.PathBytes) != 3 || m.PathLength != 3 {
+			t.Errorf("channel A message took the wrong raw packet's path: path=%x pathLen=%d", m.PathBytes, m.PathLength)
+		}
+		got = m
+	}
+	frame := append([]byte{respCodeChannelMsgRecv, 0, 0x03, txtTypePlain}, 0, 0, 0, 0)
+	frame = append(frame, "Bot: hi"...)
+	c.parseChannelMessage(frame)
+
+	if got == nil {
+		t.Fatal("onChannelMessage not called")
+	}
+}
+
 // The V1 parser must satisfy the same ordering rule.
 func TestChannelMessageV1CallbackSeesFinalMessage(t *testing.T) {
 	c := NewMeshCoreClient(nil)

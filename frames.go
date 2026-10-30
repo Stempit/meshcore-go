@@ -104,7 +104,8 @@ func (c *MeshCoreClient) parseContactMessageV3(data []byte) {
 	// in the correlated raw RF packet (present only for live, not history-synced,
 	// messages). This reflects the real route the message took — e.g. a sender's
 	// forced path — rather than the bot's stored outbound path to the contact.
-	pathBytes, pathHops := c.takePendingRawPath()
+	rawData, _ := c.takeDmRaw(prefix)
+	pathBytes, pathHops := extractPathFromRaw(rawData)
 	msgPathLen := pathLen
 	msgPathBytes := contactPath
 	if len(pathBytes) > 0 {
@@ -238,7 +239,7 @@ func (c *MeshCoreClient) parseChannelMessageV3(data []byte) {
 	if ch != nil {
 		psk = ch.PSK
 	}
-	rawData, rawRSSI := c.takeChannelRaw(psk)
+	rawData, _, rawRSSI := c.takeChannelRaw(psk)
 	if rawData != nil {
 		rssi = rawRSSI
 	}
@@ -355,19 +356,29 @@ func hopsHex(path []byte, hashSize int) string {
 	return strings.Join(parts, ":")
 }
 
-// takePendingRawPath returns the path hops from the oldest still-valid pending
-// raw RF packet and removes it. The 0x88 raw frame arrives just before its
-// decoded companion frame, so the oldest entry corresponds to this message.
-// Returns nil, 0 when no live raw packet is available (e.g. a message synced
-// from device history). Must be called from the frameHandler goroutine, which
-// is the only writer of c.pendingRaw.
-func (c *MeshCoreClient) takePendingRawPath() (pathBytes []byte, hopCount int) {
+// takeDmRaw finds and removes the oldest still-valid pending raw frame that is
+// the TXT_MSG packet of the DM being decoded — matched on the payload type and
+// the sender's key hash (payload[1]), not mere arrival order. Order-only
+// matching let an unrelated packet — advert, ACK, channel traffic — that
+// merely arrived within pendingRawTTL lend its path to this message, the same
+// wrong-match problem takeChannelRaw solves for channel messages. Returns nil
+// when no matching live raw is available (e.g. a message synced from device
+// history). Must be called from the frameHandler goroutine, the only writer of
+// c.pendingRaw.
+func (c *MeshCoreClient) takeDmRaw(senderPrefix []byte) (rawData []byte, rssi float64) {
+	if len(senderPrefix) == 0 {
+		return nil, 0
+	}
 	for i := 0; i < len(c.pendingRaw); i++ {
 		p := c.pendingRaw[i]
-		if time.Since(p.arrivedAt) <= pendingRawTTL {
-			c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
-			return extractPathFromRaw(p.rawData)
+		if time.Since(p.arrivedAt) > pendingRawTTL {
+			continue
 		}
+		if !rawIsTxtMsgFrom(p.rawData, senderPrefix[0]) {
+			continue
+		}
+		c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
+		return p.rawData, p.rssi
 	}
 	return nil, 0
 }
@@ -379,7 +390,7 @@ func (c *MeshCoreClient) takePendingRawPath() (pathBytes []byte, hopCount int) {
 // from lending its path to this message. Returns nil when no matching live raw
 // is available (e.g. a message synced from device history). Must be called from
 // the frameHandler goroutine, the only writer of c.pendingRaw.
-func (c *MeshCoreClient) takeChannelRaw(psk []byte) (rawData []byte, rssi float64) {
+func (c *MeshCoreClient) takeChannelRaw(psk []byte) (rawData []byte, snr, rssi float64) {
 	wantHash, haveHash := channelHashByte(psk)
 	for i := 0; i < len(c.pendingRaw); i++ {
 		p := c.pendingRaw[i]
@@ -390,9 +401,9 @@ func (c *MeshCoreClient) takeChannelRaw(psk []byte) (rawData []byte, rssi float6
 			continue
 		}
 		c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
-		return p.rawData, p.rssi
+		return p.rawData, p.snr, p.rssi
 	}
-	return nil, 0
+	return nil, 0, 0
 }
 
 // extractPathFromRaw parses the path bytes out of a raw RF packet.
@@ -490,7 +501,8 @@ func (c *MeshCoreClient) parseContactMessage(data []byte) {
 
 	// Prefer the real path from the correlated raw RF packet over the bot's
 	// stored outbound path to the contact (see parseContactMessageV3).
-	pathBytes, pathHops := c.takePendingRawPath()
+	rawData, _ := c.takeDmRaw(prefix)
+	pathBytes, pathHops := extractPathFromRaw(rawData)
 	msgPathLen := pathLen
 	msgPathBytes := contactPath
 	if len(pathBytes) > 0 {
@@ -586,33 +598,6 @@ func (c *MeshCoreClient) parseChannelMessage(data []byte) {
 		MessageID:    fmt.Sprintf("%d-%d", channelIndex, timestampRaw),
 	}
 
-	// Correlate with the oldest pending 0x88 raw frame (arrives before decoded
-	// frame) and finish the message BEFORE anyone sees it: the stored copy, the
-	// callback and IncomingMessages consumers must all observe the same
-	// complete struct.
-	var rawData []byte
-	var snr, rssi float64
-	for i := 0; i < len(c.pendingRaw); i++ {
-		p := c.pendingRaw[i]
-		if time.Since(p.arrivedAt) <= pendingRawTTL {
-			rawData = p.rawData
-			snr = p.snr
-			rssi = p.rssi
-			c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
-			break
-		}
-	}
-
-	// Extract path bytes from the raw RF packet so the bot can show repeater IDs.
-	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
-		msg.PathBytes = pathBytes
-		msg.PathLength = hopCount
-	}
-
-	c.mu.Lock()
-	c.channelMsgs[channelIndex] = append(c.channelMsgs[channelIndex], msg)
-	c.mu.Unlock()
-
 	c.mu.RLock()
 	ch := c.channels[channelIndex]
 	publisher := c.publisher
@@ -626,6 +611,28 @@ func (c *MeshCoreClient) parseChannelMessage(data []byte) {
 	if ch != nil && len(ch.PSK) > 0 {
 		channelKeyHex = hex.EncodeToString(ch.PSK)
 	}
+
+	// Correlate with the pending 0x88 raw frame of THIS channel message —
+	// matched on the GRP_TXT payload type and channel hash, same as the V3
+	// parser, instead of trusting arrival order alone.
+	var psk []byte
+	if ch != nil {
+		psk = ch.PSK
+	}
+	rawData, snr, rssi := c.takeChannelRaw(psk)
+
+	// Extract path bytes from the raw RF packet so the bot can show repeater
+	// IDs. Finish the message BEFORE anyone sees it: the stored copy, the
+	// callback and IncomingMessages consumers must all observe the same
+	// complete struct.
+	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
+		msg.PathBytes = pathBytes
+		msg.PathLength = hopCount
+	}
+
+	c.mu.Lock()
+	c.channelMsgs[channelIndex] = append(c.channelMsgs[channelIndex], msg)
+	c.mu.Unlock()
 
 	// Publish to MQTT packets topic with decoded fields.
 	if publisher != nil {

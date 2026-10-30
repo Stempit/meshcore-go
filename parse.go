@@ -546,6 +546,7 @@ func buildGRPTXTPacket(psk []byte, senderName, text string, timestamp uint32) []
 // MeshCore packet/header constants (mirrors firmware src/MeshCore.h, src/Packet.h).
 const (
 	payloadTypeGrpTxt = 0x05 // PAYLOAD_TYPE_GRP_TXT
+	payloadTypeTxtMsg = 0x02 // PAYLOAD_TYPE_TXT_MSG
 	maxHashSize       = 8    // MAX_HASH_SIZE
 )
 
@@ -674,6 +675,20 @@ func rawIsChannelMsg(raw []byte, wantHash byte, haveHash bool) bool {
 	}
 	// GRP_TXT payload wire format: [channel_hash(1)][mac(2)][ciphertext…].
 	return len(payload) > 0 && payload[0] == wantHash
+}
+
+// rawIsTxtMsgFrom reports whether a raw RF frame is a TXT_MSG direct message
+// whose source hash matches the given sender key prefix — payload[1] is the
+// sender's first key byte on both TRANSPORT and flood routes. It is used to
+// correlate a decoded DM frame with the right 0x88 raw frame instead of
+// trusting arrival order alone: the DM-side counterpart of rawIsChannelMsg.
+func rawIsTxtMsgFrom(raw []byte, senderHash byte) bool {
+	ptype, payload, ok := rawFramePayload(raw)
+	if !ok || ptype != payloadTypeTxtMsg {
+		return false
+	}
+	// TXT_MSG payload wire format: [dest_hash(1)][src_hash(1)][mac(2)][ciphertext…].
+	return len(payload) >= 2 && payload[1] == senderHash
 }
 
 // armRepeatWatch starts watching incoming raw frames for a rebroadcast of the
