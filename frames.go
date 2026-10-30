@@ -747,12 +747,15 @@ func (c *MeshCoreClient) handleFrame(data []byte) {
 
 	// Priority 3 — log + MQTT publish
 	case pushCodeRawData:
-		snr := float64(0)
-		rssi := float64(0)
-		if len(data) >= 3 {
-			snr = float64(int8(data[1])) / 4.0
-			rssi = float64(int8(data[2]))
+		// The stream parser accepts any frame length ≥ 1, so a corrupted or
+		// misbehaving device can deliver a short 0x84 frame; slice defensively
+		// like parseLogRxData does instead of panicking the frame handler.
+		if len(data) < 3 {
+			c.logger.Warn("Raw data frame too short", "len", len(data))
+			return
 		}
+		snr := float64(int8(data[1])) / 4.0
+		rssi := float64(int8(data[2]))
 		c.logger.Debug("Raw data packet", "snr", snr, "rssi", rssi,
 			"payload", fmt.Sprintf("%x", data[3:]))
 		c.publishPendingRawToMQTT(snr, rssi)
