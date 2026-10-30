@@ -635,6 +635,8 @@ func (c *MeshCoreClient) GetAllChannelMessages() []*ChannelMessage {
 }
 
 // IncomingMessages возвращает канал для чтения входящих сообщений (*Message и *ChannelMessage).
+// Канал закрывается при Disconnect(); после Reconect() генерируется новый канал —
+// его нужно получить заново (потребители обычно используют колбэки, а не этот канал).
 func (c *MeshCoreClient) IncomingMessages() <-chan interface{} {
 	return c.incomingCh
 }

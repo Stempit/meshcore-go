@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"time"
-
-	"go.bug.st/serial"
 )
 
 // ============================================================================
@@ -300,123 +297,18 @@ func (c *MeshCoreClient) sendReboot() error {
 
 func (c *MeshCoreClient) write(data []byte) error {
 	c.mu.RLock()
-	if !c.connected {
-		c.mu.RUnlock()
+	conn, connected := c.conn, c.connected
+	c.mu.RUnlock()
+	if !connected || conn == nil {
 		return fmt.Errorf("not connected")
 	}
-	isSerial := c.serialPort != nil
-	c.mu.RUnlock()
 
-	var err error
-	if isSerial {
-		err = c.serialWriteFramed(data)
-	} else {
-		c.mu.RLock()
-		if c.rxChar == nil {
-			c.mu.RUnlock()
-			return fmt.Errorf("not connected")
-		}
-		c.writeMu.Lock()
-		_, err = c.rxChar.Write(data)
-		c.writeMu.Unlock()
-		c.mu.RUnlock()
-	}
+	err := conn.WriteFrame(data)
 	if err != nil {
 		c.logger.Error("Write failed", "error", err)
 		c.markDisconnected()
 	}
 	return err
-}
-
-// serialWriteFramed wraps data in the MeshCore serial frame format:
-// '<' + len_LSB + len_MSB + payload
-func (c *MeshCoreClient) serialWriteFramed(data []byte) error {
-	frame := make([]byte, 3+len(data))
-	frame[0] = '<'
-	binary.LittleEndian.PutUint16(frame[1:3], uint16(len(data)))
-	copy(frame[3:], data)
-	c.writeMu.Lock()
-	_, err := c.serialPort.Write(frame)
-	c.writeMu.Unlock()
-	return err
-}
-
-// serialReadLoop reads framed packets from the serial port and feeds them into
-// notifyCh. Frame format: '>' + len_LSB + len_MSB + payload (device→host).
-func (c *MeshCoreClient) serialReadLoop() {
-	defer c.wg.Done()
-
-	const (
-		stateIdle       = 0
-		stateGotMarker  = 1
-		stateGotLen1    = 2
-		stateCollecting = 3
-	)
-
-	state := stateIdle
-	var lenBuf [2]byte
-	var frameLen int
-	var frame []byte
-	oneByte := make([]byte, 1)
-
-	for {
-		select {
-		case <-c.doneCh:
-			return
-		default:
-		}
-
-		n, err := c.serialPort.Read(oneByte)
-		if err != nil {
-			if err == io.EOF {
-				continue
-			}
-			select {
-			case <-c.doneCh:
-				return
-			default:
-				c.logger.Error("Serial read error", "error", err)
-				c.markDisconnected()
-				return
-			}
-		}
-		if n == 0 {
-			continue
-		}
-		b := oneByte[0]
-
-		switch state {
-		case stateIdle:
-			if b == '>' {
-				state = stateGotMarker
-			}
-		case stateGotMarker:
-			lenBuf[0] = b
-			state = stateGotLen1
-		case stateGotLen1:
-			lenBuf[1] = b
-			frameLen = int(binary.LittleEndian.Uint16(lenBuf[:]))
-			if frameLen == 0 || frameLen > 512 {
-				c.logger.Warn("Serial frame: invalid length, resetting", "len", frameLen)
-				state = stateIdle
-				continue
-			}
-			frame = make([]byte, 0, frameLen)
-			state = stateCollecting
-		case stateCollecting:
-			frame = append(frame, b)
-			if len(frame) >= frameLen {
-				frameCopy := make([]byte, len(frame))
-				copy(frameCopy, frame)
-				select {
-				case c.notifyCh <- frameCopy:
-				default:
-					c.logger.Warn("Serial notification channel full, dropping frame")
-				}
-				state = stateIdle
-			}
-		}
-	}
 }
 
 // markDisconnected transitions the client to a disconnected state after a
@@ -433,16 +325,16 @@ func (c *MeshCoreClient) markDisconnected() {
 	default:
 		close(c.doneCh)
 	}
-	isSerial := c.serialPort != nil
+	// Wait only for this connection generation's frame handler; a concurrent
+	// Reconnect may already have started a new one on a fresh done channel.
+	handlersDone := c.handlersDone
+	conn := c.conn
 	c.mu.Unlock()
-	c.wg.Wait() // wait for goroutines to exit
-	if isSerial {
-		_ = c.serialPort.Close()
-		c.logger.Warn("Serial connection lost; reconnection required")
-	} else if c.device != nil {
-		_ = c.device.Disconnect()
-		c.logger.Warn("Connection lost; reconnection required")
+	<-handlersDone
+	if conn != nil {
+		_ = conn.Close()
 	}
+	c.logger.Warn("Connection lost; reconnection required")
 }
 
 // IsConnected reports whether the client currently has an active connection.
@@ -452,86 +344,15 @@ func (c *MeshCoreClient) IsConnected() bool {
 	return c.connected
 }
 
-// Reconnect re-establishes the connection (BLE or serial) to the previously used address/port.
+// Reconnect re-establishes the connection (BLE, serial or TCP) to the
+// previously used address/port.
 func (c *MeshCoreClient) Reconnect() error {
 	c.mu.RLock()
-	isSerial := c.serialPort != nil || c.serialPortPath != ""
-	portPath := c.serialPortPath
-	baud := c.serialBaud
+	reconnectFn := c.reconnect
 	addr := c.address
 	c.mu.RUnlock()
-	if isSerial {
-		return c.ConnectSerial(portPath, baud)
+	if reconnectFn != nil {
+		return reconnectFn()
 	}
 	return c.Connect(addr)
-}
-
-// ConnectSerial opens a serial port and initialises the MeshCore protocol over it.
-// portPath is the OS path to the serial device (e.g. "/dev/ttyUSB0", "COM3").
-// baud should be 115200 for standard MeshCore firmware.
-func (c *MeshCoreClient) ConnectSerial(portPath string, baud int) error {
-	c.mu.Lock()
-	if c.connected {
-		c.mu.Unlock()
-		return nil
-	}
-	c.serialPortPath = portPath
-	c.serialBaud = baud
-	select {
-	case <-c.doneCh:
-	default:
-		close(c.doneCh)
-	}
-	c.doneCh = make(chan struct{})
-	c.mu.Unlock()
-
-	// Drain stale notifications from any previous connection.
-drainLoop:
-	for {
-		select {
-		case <-c.notifyCh:
-		default:
-			break drainLoop
-		}
-	}
-
-	mode := &serial.Mode{BaudRate: baud}
-	port, err := serial.Open(portPath, mode)
-	if err != nil {
-		return fmt.Errorf("open serial port %s: %w", portPath, err)
-	}
-
-	c.mu.Lock()
-	c.serialPort = port
-	c.connected = true
-	c.mu.Unlock()
-
-	c.logger.Info("Serial port opened", "port", portPath, "baud", baud)
-
-	// Start the serial read loop (feeds notifyCh like BLE notifications do).
-	c.wg.Add(1)
-	go c.serialReadLoop()
-
-	// Start the frame handler goroutine (same as BLE path).
-	c.wg.Add(1)
-	go c.frameHandler()
-
-	if err := c.sendAppStart(); err != nil {
-		c.Disconnect()
-		return err
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	if err := c.sendDeviceQuery(); err != nil {
-		c.Disconnect()
-		return err
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	if err := c.sendSetDeviceTime(uint32(time.Now().Unix())); err != nil {
-		c.logger.Warn("Failed to sync device time", "error", err)
-	} else {
-		c.logger.Info("Device time synced")
-	}
-	return nil
 }

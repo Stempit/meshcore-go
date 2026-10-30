@@ -13,15 +13,20 @@ import (
 // Обработчик входящих фреймов
 // ============================================================================
 
-func (c *MeshCoreClient) frameHandler() {
-	defer c.wg.Done() // для канала входящих сообщений
+// frameHandler dispatches incoming frames until doneCh — the done channel of
+// the connection generation it was started for — is closed, then closes
+// handlersDone so teardown can proceed. doneCh is snapshotted so that a
+// concurrent reconnect (which swaps in a fresh doneCh) cannot keep this
+// generation alive.
+func (c *MeshCoreClient) frameHandler(doneCh <-chan struct{}, handlersDone chan struct{}) {
+	defer close(handlersDone)
 
 	for {
 		select {
 		case data := <-c.notifyCh:
 			c.logger.Debug("RX frame", "data", fmt.Sprintf("%x", data))
 			c.handleFrame(data)
-		case <-c.doneCh:
+		case <-doneCh:
 			return
 		}
 	}

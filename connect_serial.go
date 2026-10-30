@@ -6,21 +6,28 @@ import (
 	"time"
 )
 
-// CreateSerialClient opens the given serial port, performs the MeshCore
-// initialisation handshake, and returns a ready-to-use MeshCoreClient.
-// portPath is the OS device path (e.g. "/dev/ttyUSB0", "/dev/tty.usbmodem*", "COM3").
-// baud should be 115200 for standard MeshCore firmware.
-func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
-	client := &MeshCoreClient{
-		contacts:    make(map[string]*Contact),
-		channels:    make(map[int]*Channel),
-		messages:    make(map[string][]*Message),
-		channelMsgs: make(map[int][]*ChannelMessage),
-		notifyCh:    make(chan []byte, 100),
-		doneCh:      make(chan struct{}),
-		incomingCh:  make(chan interface{}, 100),
-		logger:      log(),
-	}
+// ConnectSerial opens a serial port and initialises the MeshCore protocol
+// over it. portPath is the OS path to the serial device (e.g. "/dev/ttyUSB0",
+// "COM3"). baud should be 115200 for standard MeshCore firmware.
+func (c *MeshCoreClient) ConnectSerial(portPath string, baud int) error {
+	return c.startWith(
+		func() (Connection, error) {
+			stream, err := dialSerial(portPath, baud)
+			if err != nil {
+				return nil, err
+			}
+			c.logger.Info("Serial port opened", "port", portPath, "baud", baud)
+			return newStreamTransport(stream, c.frameSink(), c.connectionLost, c.logger), nil
+		},
+		func() error { return c.ConnectSerial(portPath, baud) },
+	)
+}
+
+// newSyncedClient returns a fresh non-BLE client plus the channel that closes
+// when the first SelfInfo arrives. Both stream factories wire the same
+// startup callbacks.
+func newSyncedClient() (*MeshCoreClient, chan struct{}) {
+	client := NewMeshCoreClient(nil)
 
 	selfInfoReceived := make(chan struct{})
 	var selfInfoOnce sync.Once
@@ -41,12 +48,14 @@ func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
 		}
 	})
 
-	if err := client.ConnectSerial(portPath, baud); err != nil {
-		log().Error("Failed to connect to serial device", "port", portPath, "error", err)
-		panic(err)
-	}
+	return client, selfInfoReceived
+}
 
-	log().Info("Serial connected, waiting for self info...")
+// runStartupSync performs the post-connect startup sequence shared by the
+// serial and TCP factories: wait for self info, request channels and contacts.
+// Panics on channel-request failure, matching CreateSerialClient's contract.
+func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, transport string) {
+	log().Info(transport + " connected, waiting for self info...")
 
 	select {
 	case <-selfInfoReceived:
@@ -71,7 +80,22 @@ func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
 	}
 
 	time.Sleep(3 * time.Second)
-	log().Info("Serial client started")
+	log().Info(transport + " client started")
+}
+
+// CreateSerialClient opens the given serial port, performs the MeshCore
+// initialisation handshake, and returns a ready-to-use MeshCoreClient.
+// portPath is the OS device path (e.g. "/dev/ttyUSB0", "/dev/tty.usbmodem*", "COM3").
+// baud should be 115200 for standard MeshCore firmware.
+func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
+	client, selfInfoReceived := newSyncedClient()
+
+	if err := client.ConnectSerial(portPath, baud); err != nil {
+		log().Error("Failed to connect to serial device", "port", portPath, "error", err)
+		panic(err)
+	}
+
+	runStartupSync(client, selfInfoReceived, "Serial")
 
 	return client
 }

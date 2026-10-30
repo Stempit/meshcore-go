@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"go.bug.st/serial"
 	"tinygo.org/x/bluetooth"
 )
 
@@ -40,12 +39,17 @@ const pendingRawTTL = 2 * time.Second
 // ============================================================================
 
 type MeshCoreClient struct {
-	adapter   *bluetooth.Adapter
-	device    *bluetooth.Device
-	rxChar    *bluetooth.DeviceCharacteristic
-	txChar    *bluetooth.DeviceCharacteristic
-	connected bool
+	// conn is the active transport (BLE, USB serial or TCP). It keeps
+	// pointing at the last transport after a disconnect; c.connected is the
+	// source of truth for whether it may be used.
+	conn Connection
+	// reconnect re-establishes the current transport; set by startWith.
+	reconnect func() error
+	// adapter is only used by the BLE transport.
+	adapter *bluetooth.Adapter
+	// address is the last BLE address, used by Reconnect as a fallback.
 	address   bluetooth.Address
+	connected bool
 	mu        sync.RWMutex
 
 	// Состояние
@@ -69,8 +73,9 @@ type MeshCoreClient struct {
 	pendingRaw []pendingRawPacket
 
 	// Каналы для обработки
-	notifyCh chan []byte
-	doneCh   chan struct{}
+	notifyCh     chan []byte
+	doneCh       chan struct{}
+	handlersDone chan struct{} // closed when the current connection's frame handler exits
 
 	// Коллбэки
 	onContact        func(*Contact)
@@ -86,15 +91,6 @@ type MeshCoreClient struct {
 	onTraceData      func(*TraceData)
 	onChannelData    func(*ChannelDataMessage)
 	onControlData    func(*ControlData)
-
-	// serialPort is non-nil when connected via USB/serial instead of BLE.
-	serialPort     serial.Port
-	serialPortPath string
-	serialBaud     int
-
-	// writeMu serializes raw writes — held only for the duration of the write
-	// call. Prevents concurrent writes which cause timeouts.
-	writeMu sync.Mutex
 
 	// sendMu serializes full send operations (write + confirmation wait).
 	// Only one Send*WithRetry can be in flight at a time.
@@ -117,7 +113,6 @@ type MeshCoreClient struct {
 
 	// канал входящих сообщений
 	incomingCh chan interface{}
-	wg         sync.WaitGroup
 
 	// Логгер
 	logger  *slog.Logger
@@ -166,16 +161,21 @@ func (c *MeshCoreClient) isDuplicateMessage(key string) bool {
 }
 
 func NewMeshCoreClient(adapter *bluetooth.Adapter) *MeshCoreClient {
+	// Closed until the first startWith swaps in a live generation, so a
+	// stray teardown never waits on a nil/never-closed channel.
+	handlersDone := make(chan struct{})
+	close(handlersDone)
 	return &MeshCoreClient{
-		adapter:     adapter,
-		contacts:    make(map[string]*Contact),
-		channels:    make(map[int]*Channel),
-		messages:    make(map[string][]*Message),
-		channelMsgs: make(map[int][]*ChannelMessage),
-		notifyCh:    make(chan []byte, 100),
-		doneCh:      make(chan struct{}),
-		incomingCh:  make(chan interface{}, 100),
-		logger:      log(),
+		adapter:      adapter,
+		contacts:     make(map[string]*Contact),
+		channels:     make(map[int]*Channel),
+		messages:     make(map[string][]*Message),
+		channelMsgs:  make(map[int][]*ChannelMessage),
+		notifyCh:     make(chan []byte, 100),
+		doneCh:       make(chan struct{}),
+		handlersDone: handlersDone,
+		incomingCh:   make(chan interface{}, 100),
+		logger:       log(),
 	}
 }
 

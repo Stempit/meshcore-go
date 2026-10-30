@@ -1,15 +1,16 @@
 # meshcore-go 📡🔧
 
-**Go-драйвер для LoRa-устройств MeshCore — BLE или serial, от протокола до API.**
+**Go-драйвер для LoRa-устройств MeshCore — BLE, serial или TCP, от протокола до API.**
 
 *[🇬🇧 English version](README.md)*
 
 `meshcore-go` подключается к LoRa-устройству [MeshCore](https://meshcore.io)
 из Go, говорит по протоколу companion-устройства через **Bluetooth LE** (по
-умолчанию) или **USB/UART serial** и отдаёт клиент с контактами, каналами,
-историей сообщений и отправкой с подтверждением доставки. Это радио-слой
-семейства meshcore — боты, HTTP-шлюзы и голосовые мосты живут в отдельных
-проектах поверх этого драйвера.
+умолчанию), **USB/UART serial** или **TCP** (прошивка companion с WiFi или
+Ethernet отдаёт тот же протокол на TCP-порту 5000) и отдаёт клиент с
+контактами, каналами, историей сообщений и отправкой с подтверждением
+доставки. Это радио-слой семейства meshcore — боты, HTTP-шлюзы и голосовые
+мосты живут в отдельных проектах поверх этого драйвера.
 
 ## Установка
 
@@ -35,6 +36,7 @@ sudo setcap cap_net_raw,cap_net_admin+eip ./your-app
 ```go
 client := meshcore.CreateClient() // BLE-скан (по умолчанию)
 // client := meshcore.CreateSerialClient("/dev/ttyUSB0", 115200)
+// client := meshcore.CreateTCPClient("192.168.1.50:5000")
 defer client.Disconnect()
 
 client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
@@ -42,8 +44,10 @@ client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
 
 ## Что умеет
 
-- **Транспорт** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth))
-  или serial ([go.bug.st/serial](https://github.com/bugst/go-serial)).
+- **Транспорт** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
+  serial ([go.bug.st/serial](https://github.com/bugst/go-serial)) или TCP. Все
+  три реализуют один внутренний интерфейс `Connection`; потоковые транспорты
+  (serial, TCP) делят фирменное `<`/`>`-обрамление прошивки.
 - **Кадры/парсинг** — декодирует кадры устройства, включая сырые
   `0x88 LOG_RX_DATA`-кадры, на которых построен ранний стоп повторных передач
   для каналов.
@@ -68,8 +72,16 @@ client.SendMessageWithRetry(contact, "привет", true, 3, 3, 3*time.Second)
 - В каждый момент времени возможна только одна отправка; конкуррентные
   отправители должны сериализоваться (диспетчер бота делает это через
   сериализованный отправитель).
-- `CreateClient` / `CreateSerialClient` логируют и паникуют, если транспорт
-  не поднялся; ошибки конфигурации — забота вызывающего.
+- `CreateClient` / `CreateSerialClient` / `CreateTCPClient` логируют и
+  паникуют, если транспорт не поднялся; ошибки конфигурации — забота
+  вызывающего.
+- TCP: на устройстве должна быть прошивка companion с WiFi или Ethernet
+  (`-D ENABLE_WIFI_INTERFACE` или Ethernet-плата). Протокол companion
+  отдаётся на TCP-порту **5000** (`TCP_PORT` / `ETHERNET_TCP_PORT`),
+  устройство принимает **одного клиента** — новое подключение молча заменяет
+  предыдущее. TLS/авторизации нет: ограничивайте доступ на уровне сети.
+  (Ethernet-сборки с `ETHERNET_RAW_LINE=1` говорят построчным CLI и этим
+  драйвером не поддерживаются.)
 - `SetLogger` заменяет логгер драйвера (по умолчанию: пакет `log`).
 
 ## Родственные проекты

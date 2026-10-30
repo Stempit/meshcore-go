@@ -1,7 +1,6 @@
 package meshcore
 
 import (
-	"fmt"
 	"time"
 
 	"tinygo.org/x/bluetooth"
@@ -11,24 +10,61 @@ import (
 // Управление подключением
 // ============================================================================
 
+// Connect establishes the BLE connection to the device with the given address
+// and initialises the MeshCore protocol over it.
 func (c *MeshCoreClient) Connect(address bluetooth.Address) error {
+	if c.IsConnected() {
+		return nil
+	}
 	c.mu.Lock()
-	if c.connected {
+	c.address = address
+	c.mu.Unlock()
+
+	return c.startWith(
+		func() (Connection, error) {
+			return newBLETransport(c.adapter, address, c.frameSink(), c.logger)
+		},
+		func() error { return c.Connect(address) },
+	)
+}
+
+// startWith brings up the MeshCore protocol over a transport created by dial.
+// The order here is load-bearing: remember the reconnect closure, wait out the
+// previous connection generation, drain stale frames, and only then dial —
+// once the new transport is live the device may start delivering immediately
+// (on reconnect the firmware flushes its queued frames to the newly accepted
+// client), so nothing may be drained after the dial. Finally the connection is
+// swapped in, the frame handler started and the initial handshake performed.
+// On dial or handshake failure the transport is closed again.
+func (c *MeshCoreClient) startWith(dial func() (Connection, error), reconnectFn func() error) error {
+	if c.IsConnected() {
+		return nil
+	}
+	c.mu.Lock()
+	if c.connected { // re-check under the lock: a concurrent connect won
 		c.mu.Unlock()
 		return nil
 	}
-	c.address = address
-	// Закрываем старый doneCh, если он ещё не закрыт (например, после разрыва)
-	select {
-	case <-c.doneCh:
-		// уже закрыт
-	default:
-		close(c.doneCh)
-	}
-	c.doneCh = make(chan struct{})
+	// Remember the transport before dialing so Reconnect() retries it even
+	// when the first attempt fails.
+	c.reconnect = reconnectFn
+	// Wait out the previous generation's frame handler and read loop so they
+	// cannot feed stale frames past the drain below.
+	prevHandlersDone := c.handlersDone
+	prevConn := c.conn
 	c.mu.Unlock()
 
-	// Drain any stale notifications buffered from the previous connection.
+	<-prevHandlersDone
+	if prevConn != nil {
+		_ = prevConn.Close()
+	}
+
+	if c.IsConnected() { // a concurrent connect completed while we waited
+		return nil
+	}
+
+	// Drain stale frames buffered from any previous connection while no
+	// transport can deliver fresh ones.
 drainLoop:
 	for {
 		select {
@@ -38,91 +74,53 @@ drainLoop:
 		}
 	}
 
-	device, err := c.adapter.Connect(address, bluetooth.ConnectionParams{})
+	conn, err := dial()
 	if err != nil {
-		c.logger.Error("Connect failed", "address", address.String(), "error", err)
-		return fmt.Errorf("connect failed: %w", err)
+		return err
 	}
-	c.mu.Lock()
-	c.device = &device
-	c.mu.Unlock()
-	c.logger.Info("Connected to device", "address", address.String())
-
-	services, err := device.DiscoverServices(nil)
-	if err != nil {
-		c.logger.Error("Discover services failed", "error", err)
-		device.Disconnect()
-		return fmt.Errorf("discover services failed: %w", err)
-	}
-	var targetService *bluetooth.DeviceService
-	for _, svc := range services {
-		if svc.UUID().String() == serviceUUID {
-			targetService = &svc
-			break
-		}
-	}
-	if targetService == nil {
-		c.logger.Error("MeshCore service not found")
-		device.Disconnect()
-		return fmt.Errorf("meshcore service not found")
-	}
-	c.logger.Info("Found MeshCore service")
-
-	chars, err := targetService.DiscoverCharacteristics(nil)
-	if err != nil {
-		c.logger.Error("Discover characteristics failed", "error", err)
-		device.Disconnect()
-		return fmt.Errorf("discover characteristics failed: %w", err)
-	}
-	for _, ch := range chars {
-		uuid := ch.UUID().String()
-		switch uuid {
-		case rxCharacteristicUUID:
-			c.rxChar = &ch
-			c.logger.Info("Found RX characteristic")
-		case txCharacteristicUUID:
-			c.txChar = &ch
-			c.logger.Info("Found TX characteristic")
-		}
-	}
-
-	if c.rxChar == nil || c.txChar == nil {
-		c.logger.Error("RX/TX characteristics not found")
-		device.Disconnect()
-		return fmt.Errorf("RX/TX characteristics not found")
-	}
-
-	c.logger.Info("Enabling notifications on TX characteristic...")
-	if err := c.txChar.EnableNotifications(func(data []byte) {
-		c.logger.Debug("Notification received", "data", fmt.Sprintf("%x", data))
-		select {
-		case c.notifyCh <- data:
-		default:
-			c.logger.Warn("Notification channel full, dropping data")
-		}
-	}); err != nil {
-		c.logger.Error("EnableNotifications failed", "error", err)
-		device.Disconnect()
-		return fmt.Errorf("enable notifications failed: %w", err)
-	}
-	c.logger.Info("Notifications enabled")
-	time.Sleep(500 * time.Millisecond)
 
 	c.mu.Lock()
+	if c.connected { // a concurrent connect won the race; drop ours
+		c.mu.Unlock()
+		_ = conn.Close()
+		return nil
+	}
+	// Закрываем старый doneCh, если он ещё не закрыт (например, после разрыва)
+	select {
+	case <-c.doneCh:
+		// уже закрыт
+	default:
+		close(c.doneCh)
+	}
+	c.doneCh = make(chan struct{})
+	// Disconnect() closed the previous incoming channel; reconnects need a
+	// fresh one, otherwise the frame handler would send on a closed channel.
+	c.incomingCh = make(chan interface{}, 100)
+	c.conn = conn
 	c.connected = true
+	doneCh, handlersDone := c.doneCh, make(chan struct{})
+	c.handlersDone = handlersDone
 	c.mu.Unlock()
-	c.wg.Add(1) // для канала входящих сообщений
-	go c.frameHandler()
 
-	// Отправка инициализационных команд
-	if err := c.sendAppStart(); err != nil {
+	// для канала входящих сообщений
+	go c.frameHandler(doneCh, handlersDone)
+
+	if err := c.handshake(); err != nil {
 		c.Disconnect()
+		return err
+	}
+	return nil
+}
+
+// handshake performs the initial command sequence every fresh connection
+// starts with: APP_START, DEVICE_QUERY and time sync.
+func (c *MeshCoreClient) handshake() error {
+	if err := c.sendAppStart(); err != nil {
 		return err
 	}
 	time.Sleep(200 * time.Millisecond)
 
 	if err := c.sendDeviceQuery(); err != nil {
-		c.Disconnect()
 		return err
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -133,50 +131,54 @@ drainLoop:
 		c.logger.Info("Device time synced")
 	}
 	return nil
+}
 
-	// // Повторная отправка AppStart todo: выпилить
-	// go func() {
-	// 	ticker := time.NewTicker(2 * time.Second)
-	// 	defer ticker.Stop()
-	// 	for {
-	// 		select {
-	// 		case <-ticker.C:
-	// 			c.mu.RLock()
-	// 			if c.selfInfo != nil {
-	// 				c.mu.RUnlock()
-	// 				return
-	// 			}
-	// 			c.mu.RUnlock()
-	// 			fmt.Println("Retrying AppStart")
-	// 			_ = c.sendAppStart()
-	// 		case <-c.doneCh:
-	// 			return
-	// 		}
-	// 	}
-	// }()
+// frameSink returns the callback transports use to deliver one complete
+// protocol frame into the client's processing pipeline.
+func (c *MeshCoreClient) frameSink() func([]byte) {
+	return func(data []byte) {
+		select {
+		case c.notifyCh <- data:
+		default:
+			c.logger.Warn("Notification channel full, dropping data")
+		}
+	}
+}
 
-	// return nil
+// connectionLost is the callback transports invoke when the read loop dies
+// unexpectedly. It runs on the transport's goroutine, so the state teardown
+// happens in a separate goroutine (Close would otherwise wait for it).
+func (c *MeshCoreClient) connectionLost(err error) {
+	c.logger.Error("Connection lost", "error", err)
+	go c.markDisconnected()
 }
 
 func (c *MeshCoreClient) Disconnect() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.connected {
+		c.mu.Unlock()
 		return nil
 	}
 	c.connected = false
 	close(c.doneCh)
-	// Close the transport before waiting so any blocked Read() in serialReadLoop
-	// (or BLE notification handler) returns immediately and the goroutine can exit.
+	// Snapshot the generation: the frame handler must observe the doneCh it
+	// was started with, and teardown must wait for exactly it.
+	handlersDone := c.handlersDone
+	incomingCh := c.incomingCh
+	conn := c.conn
+	// Release c.mu before waiting: the frame handler may be inside
+	// handleFrame waiting for c.mu and would never reach its doneCh select.
+	c.mu.Unlock()
+
+	// Close the transport before waiting so any blocked Read() in the
+	// transport's read loop (or BLE notification handler) returns immediately
+	// and the goroutine can exit.
 	var closeErr error
-	if c.serialPort != nil {
-		c.logger.Info("Closing serial port")
-		closeErr = c.serialPort.Close()
-	} else if c.device != nil {
-		c.logger.Info("Disconnecting from device")
-		closeErr = c.device.Disconnect()
+	if conn != nil {
+		c.logger.Info("Closing connection")
+		closeErr = conn.Close()
 	}
-	c.wg.Wait()
-	close(c.incomingCh)
+	<-handlersDone
+	close(incomingCh)
 	return closeErr
 }

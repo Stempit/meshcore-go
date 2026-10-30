@@ -1,15 +1,16 @@
 # meshcore-go 📡🔧
 
-**A Go driver for MeshCore LoRa companion devices — BLE or serial, wire to API.**
+**A Go driver for MeshCore LoRa companion devices — BLE, serial or TCP, wire to API.**
 
 *[🇷🇺 Русская версия](README_RU.md)*
 
 `meshcore-go` connects to a [MeshCore](https://meshcore.io) radio device from
-Go, speaks the companion-device wire protocol over **Bluetooth LE** (default)
-or **USB/UART serial**, and hands you a client with contacts, channels, message
-history, and delivery-confirmed sends. It is the radio layer of the meshcore
-family — bots, HTTP gateways and voice bridges are separate projects built on
-top of this driver.
+Go, speaks the companion-device wire protocol over **Bluetooth LE** (default),
+**USB/UART serial** or **TCP** (WiFi/Ethernet companion firmware serves the
+same protocol on TCP port 5000), and hands you a client with contacts,
+channels, message history, and delivery-confirmed sends. It is the radio layer
+of the meshcore family — bots, HTTP gateways and voice bridges are separate
+projects built on top of this driver.
 
 ## Install
 
@@ -34,6 +35,7 @@ retry, read messages stored on the device, process live arrivals and reply.
 ```go
 client := meshcore.CreateClient() // BLE scan (default)
 // client := meshcore.CreateSerialClient("/dev/ttyUSB0", 115200)
+// client := meshcore.CreateTCPClient("192.168.1.50:5000")
 defer client.Disconnect()
 
 client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
@@ -41,8 +43,10 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
 
 ## What it handles
 
-- **Transport** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth))
-  or serial ([go.bug.st/serial](https://github.com/bugst/go-serial)).
+- **Transport** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
+  serial ([go.bug.st/serial](https://github.com/bugst/go-serial)) or TCP. All
+  three implement one internal `Connection` interface; the stream transports
+  (serial, TCP) share the firmware's `<`/`>` length-prefixed framing.
 - **Framing/parsing** — decodes device frames, including the raw `0x88 LOG_RX_DATA`
   frames used for the channel-reliability early-stop.
 - **Sending** — DMs (`SendMessageWithRetry`, ack→no-ack fallback) and channel
@@ -65,8 +69,16 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
   docs.
 - Only one send can be in flight at a time; concurrent senders must serialise
   (the bot's dispatcher does this with a serialized sender).
-- `CreateClient` / `CreateSerialClient` log and panic when the transport itself
-  cannot be established; configuration errors are the caller's to check.
+- `CreateClient` / `CreateSerialClient` / `CreateTCPClient` log and panic when
+  the transport itself cannot be established; configuration errors are the
+  caller's to check.
+- TCP: the device must run companion firmware with WiFi or Ethernet enabled
+  (`-D ENABLE_WIFI_INTERFACE` builds, or an Ethernet companion board). It
+  serves the companion protocol on TCP port **5000** (`TCP_PORT` /
+  `ETHERNET_TCP_PORT`) and accepts a **single client** — a new connection
+  silently replaces the previous one. There is no TLS/auth: restrict access at
+  the network level. (Ethernet builds with `ETHERNET_RAW_LINE=1` speak a
+  line-based CLI instead and are not supported by this driver.)
 - `SetLogger` swaps the driver's logger (default: `log` package).
 
 ## Related projects
