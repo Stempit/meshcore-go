@@ -213,16 +213,6 @@ func (c *MeshCoreClient) parseChannelMessageV3(data []byte) {
 		MessageID:    fmt.Sprintf("%d-%d", channelIndex, timestampRaw),
 	}
 
-	c.mu.Lock()
-	c.channelMsgs[channelIndex] = append(c.channelMsgs[channelIndex], msg)
-	c.mu.Unlock()
-
-	if c.onChannelMessage != nil {
-		c.onChannelMessage(msg)
-	}
-
-	// Publish to MQTT packets topic with decoded fields.
-	// Correlate with the most recent pending 0x88 raw frame (same radio packet).
 	c.mu.RLock()
 	ch := c.channels[channelIndex]
 	publisher := c.publisher
@@ -235,12 +225,6 @@ func (c *MeshCoreClient) parseChannelMessageV3(data []byte) {
 	}
 	if ch != nil && len(ch.PSK) > 0 {
 		channelKeyHex = hex.EncodeToString(ch.PSK)
-	}
-
-	if c.histLog != nil {
-		if err := c.histLog.LogChannelIncoming(channelName, senderName, text, msg.Timestamp); err != nil {
-			c.logger.Error("historylog: failed to log incoming channel message", "error", err)
-		}
 	}
 
 	snr := float64(int8(data[1])) / 4.0
@@ -259,16 +243,33 @@ func (c *MeshCoreClient) parseChannelMessageV3(data []byte) {
 		rssi = rawRSSI
 	}
 
+	// Extract path bytes from raw RF packet so the bot can show repeater IDs.
+	// The path is only on the wire for live (just-delivered) messages; those
+	// synced from the device's history arrive without a correlated 0x88 frame.
+	// Finish the message BEFORE anyone sees it: the stored copy, the callback
+	// and IncomingMessages consumers must all observe the same complete struct.
+	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
+		msg.PathBytes = pathBytes
+		msg.PathLength = hopCount
+	}
+
+	c.mu.Lock()
+	c.channelMsgs[channelIndex] = append(c.channelMsgs[channelIndex], msg)
+	c.mu.Unlock()
+
+	// Publish to MQTT packets topic with decoded fields.
 	if publisher != nil {
 		publisher.QueueChannelPacket(rawData, false, snr, rssi, channelIndex, channelName, senderName, text, channelKeyHex)
 	}
 
-	// Extract path bytes from raw RF packet so the bot can show repeater IDs.
-	// The path is only on the wire for live (just-delivered) messages; those
-	// synced from the device's history arrive without a correlated 0x88 frame.
-	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
-		msg.PathBytes = pathBytes
-		msg.PathLength = hopCount
+	if c.histLog != nil {
+		if err := c.histLog.LogChannelIncoming(channelName, senderName, text, msg.Timestamp); err != nil {
+			c.logger.Error("historylog: failed to log incoming channel message", "error", err)
+		}
+	}
+
+	if c.onChannelMessage != nil {
+		c.onChannelMessage(msg)
 	}
 
 	c.logger.Info("Channel message V3 received",
@@ -585,15 +586,33 @@ func (c *MeshCoreClient) parseChannelMessage(data []byte) {
 		MessageID:    fmt.Sprintf("%d-%d", channelIndex, timestampRaw),
 	}
 
+	// Correlate with the oldest pending 0x88 raw frame (arrives before decoded
+	// frame) and finish the message BEFORE anyone sees it: the stored copy, the
+	// callback and IncomingMessages consumers must all observe the same
+	// complete struct.
+	var rawData []byte
+	var snr, rssi float64
+	for i := 0; i < len(c.pendingRaw); i++ {
+		p := c.pendingRaw[i]
+		if time.Since(p.arrivedAt) <= pendingRawTTL {
+			rawData = p.rawData
+			snr = p.snr
+			rssi = p.rssi
+			c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
+			break
+		}
+	}
+
+	// Extract path bytes from the raw RF packet so the bot can show repeater IDs.
+	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
+		msg.PathBytes = pathBytes
+		msg.PathLength = hopCount
+	}
+
 	c.mu.Lock()
 	c.channelMsgs[channelIndex] = append(c.channelMsgs[channelIndex], msg)
 	c.mu.Unlock()
 
-	if c.onChannelMessage != nil {
-		c.onChannelMessage(msg)
-	}
-
-	// Publish to MQTT packets topic with decoded fields.
 	c.mu.RLock()
 	ch := c.channels[channelIndex]
 	publisher := c.publisher
@@ -608,28 +627,13 @@ func (c *MeshCoreClient) parseChannelMessage(data []byte) {
 		channelKeyHex = hex.EncodeToString(ch.PSK)
 	}
 
-	// Correlate with the oldest pending 0x88 raw frame (arrives before decoded frame).
-	var rawData []byte
-	var snr, rssi float64
-	for i := 0; i < len(c.pendingRaw); i++ {
-		p := c.pendingRaw[i]
-		if time.Since(p.arrivedAt) <= pendingRawTTL {
-			rawData = p.rawData
-			snr = p.snr
-			rssi = p.rssi
-			c.pendingRaw = append(c.pendingRaw[:i], c.pendingRaw[i+1:]...)
-			break
-		}
-	}
-
+	// Publish to MQTT packets topic with decoded fields.
 	if publisher != nil {
 		publisher.QueueChannelPacket(rawData, false, snr, rssi, channelIndex, channelName, senderName, text, channelKeyHex)
 	}
 
-	// Extract path bytes from the raw RF packet so the bot can show repeater IDs.
-	if pathBytes, hopCount := extractPathFromRaw(rawData); len(pathBytes) > 0 {
-		msg.PathBytes = pathBytes
-		msg.PathLength = hopCount
+	if c.onChannelMessage != nil {
+		c.onChannelMessage(msg)
 	}
 
 	c.logger.Info("Channel message received (V1)",
