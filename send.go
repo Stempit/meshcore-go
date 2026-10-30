@@ -86,12 +86,26 @@ func (c *MeshCoreClient) sendTextMessage(recipient []byte, text string, attempt 
 	return messageID, nil
 }
 
+// sendConfirm delivers v to a confirmation slot without blocking. The
+// channels are buffered size 1 and the slot is their only sender, but a
+// waiter that hit its select-timeout at the same instant a confirmation
+// arrived can leave the buffer full while re-arming the same channel on the
+// next attempt; a blocking send would then park the frame handler inside
+// confirmMu forever. Dropping is safe: the waiter already gave up, and the
+// deferred cleanup in SendMessageWithRetry clears the slot.
+func (c *MeshCoreClient) sendConfirm(ch chan error, v error) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
 // подтверждение отправки
 func (c *MeshCoreClient) notifySent() {
 	c.confirmMu.Lock()
 	defer c.confirmMu.Unlock()
 	if c.sentConfirmCh != nil {
-		c.sentConfirmCh <- nil
+		c.sendConfirm(c.sentConfirmCh, nil)
 		c.sentConfirmCh = nil
 	}
 }
@@ -112,7 +126,7 @@ func (c *MeshCoreClient) notifyDelivered() {
 	c.confirmMu.Lock()
 	defer c.confirmMu.Unlock()
 	if c.deliveredConfirmCh != nil {
-		c.deliveredConfirmCh <- nil
+		c.sendConfirm(c.deliveredConfirmCh, nil)
 		c.deliveredConfirmCh = nil
 	}
 }
@@ -122,11 +136,11 @@ func (c *MeshCoreClient) notifyErr(err error) {
 	c.confirmMu.Lock()
 	defer c.confirmMu.Unlock()
 	if c.sentConfirmCh != nil {
-		c.sentConfirmCh <- err
+		c.sendConfirm(c.sentConfirmCh, err)
 		c.sentConfirmCh = nil
 	}
 	if c.deliveredConfirmCh != nil {
-		c.deliveredConfirmCh <- err
+		c.sendConfirm(c.deliveredConfirmCh, err)
 		c.deliveredConfirmCh = nil
 	}
 }

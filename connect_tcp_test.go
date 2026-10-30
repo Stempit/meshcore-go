@@ -19,7 +19,30 @@ type fakeDevice struct {
 	mu   sync.Mutex
 	conn net.Conn
 
+	// responders scripts per-command replies for the send-retry tests; when a
+	// command has a responder its return value is written instead of the
+	// default handshake answers.
+	responders map[byte]*scriptResponder
+
 	cmds chan []byte
+}
+
+// scriptResponder answers the nth occurrence of one command code.
+type scriptResponder struct {
+	n       int
+	respond func(nth int, payload []byte) [][]byte
+}
+
+// setResponder installs a custom response script for one command code. The
+// default handshake behavior remains for every other command. respond runs on
+// the device's read goroutine and must not block.
+func (d *fakeDevice) setResponder(cmd byte, respond func(nth int, payload []byte) [][]byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.responders == nil {
+		d.responders = make(map[byte]*scriptResponder)
+	}
+	d.responders[cmd] = &scriptResponder{respond: respond}
 }
 
 func startFakeDevice(t *testing.T) (*fakeDevice, string) {
@@ -73,6 +96,12 @@ func (d *fakeDevice) handle(conn net.Conn) {
 		case d.cmds <- append([]byte(nil), payload[:n]...):
 		default:
 		}
+		if frames := d.scriptedReply(cmd, payload[:n]); frames != nil {
+			for _, f := range frames {
+				_ = d.writeFrame(conn, f)
+			}
+			continue
+		}
 		switch cmd {
 		case cmdAppStart:
 			_ = d.writeFrame(conn, []byte{respCodeOk})
@@ -92,6 +121,19 @@ func (d *fakeDevice) writeFrame(conn net.Conn, payload []byte) error {
 	copy(frame[3:], payload)
 	_, err := conn.Write(frame)
 	return err
+}
+
+// scriptedReply returns the scripted frames for cmd, or nil to fall through to
+// the default handshake answers.
+func (d *fakeDevice) scriptedReply(cmd byte, payload []byte) [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r := d.responders[cmd]
+	if r == nil {
+		return nil
+	}
+	r.n++
+	return r.respond(r.n, payload)
 }
 
 // closeConn simulates the device disappearing (reboot, power loss).
