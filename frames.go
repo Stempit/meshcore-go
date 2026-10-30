@@ -499,6 +499,13 @@ func (c *MeshCoreClient) parseContactMessage(data []byte) {
 		c.logger.Warn("parseContactMessage: unknown sender", "prefix", fmt.Sprintf("%x", prefix))
 	}
 
+	dedupKey := fmt.Sprintf("dm:%x-%d-%s", prefix, timestampRaw, text)
+	if c.isDuplicateMessage(dedupKey) {
+		c.logger.Debug("Duplicate DM dropped (sender retry)",
+			"prefix", fmt.Sprintf("%x", prefix), "timestamp", timestampRaw, "text", text)
+		return
+	}
+
 	// Prefer the real path from the correlated raw RF packet over the bot's
 	// stored outbound path to the contact (see parseContactMessageV3).
 	rawData, _ := c.takeDmRaw(prefix)
@@ -585,6 +592,13 @@ func (c *MeshCoreClient) parseChannelMessage(data []byte) {
 	} else {
 		senderName = fmt.Sprintf("?ch%d", channelIndex)
 		c.logger.Warn("parseChannelMessage: no sender prefix in text")
+	}
+
+	dedupKey := fmt.Sprintf("ch:%d-%d-%s-%s", channelIndex, timestampRaw, senderName, text)
+	if c.isDuplicateMessage(dedupKey) {
+		c.logger.Debug("Duplicate channel message dropped (sender retry)",
+			"channel", channelIndex, "timestamp", timestampRaw, "sender", senderName, "text", text)
+		return
 	}
 
 	msg := &ChannelMessage{

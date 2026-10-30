@@ -330,7 +330,9 @@ func (c *MeshCoreClient) write(data []byte) error {
 }
 
 // markDisconnected transitions the client to a disconnected state after a
-// write or read failure. It is safe to call concurrently; subsequent calls are no-ops.
+// write or read failure. It is safe to call concurrently; subsequent calls are
+// no-ops. Unlike Disconnect it leaves incomingCh open: consumers detect this
+// path via IsConnected(), not channel closure.
 func (c *MeshCoreClient) markDisconnected() {
 	c.mu.Lock()
 	if !c.connected {

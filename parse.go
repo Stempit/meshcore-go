@@ -269,20 +269,31 @@ func (c *MeshCoreClient) parseContactV3(data []byte) {
 		c.logger.Warn("ContactV3: unknown prefix, using as key", "prefix", fmt.Sprintf("%x", prefix))
 	}
 
-	contact := &Contact{
-		PublicKey:  fullKey,
-		Name:       name,
-		Type:       0,
-		Flags:      0,
-		PathLength: 0,
-		Path:       []byte{},
-		Latitude:   nil,
-		Longitude:  nil,
-		LastSeen:   time.Now(),
-	}
-
+	var contact *Contact
 	c.mu.Lock()
-	c.contacts[pubKeyHex(fullKey)] = contact
+	if existing, ok := c.contacts[pubKeyHex(fullKey)]; ok && len(fullKey) > 6 {
+		// The V3 frame carries only the key prefix and a name; replacing the
+		// cached entry would drop its path, type, GPS and lastmod. Refresh the
+		// volatile fields on the full contact instead.
+		if name != "" {
+			existing.Name = name
+		}
+		existing.LastSeen = time.Now()
+		contact = existing
+	} else {
+		contact = &Contact{
+			PublicKey:  fullKey,
+			Name:       name,
+			Type:       0,
+			Flags:      0,
+			PathLength: 0,
+			Path:       []byte{},
+			Latitude:   nil,
+			Longitude:  nil,
+			LastSeen:   time.Now(),
+		}
+		c.contacts[pubKeyHex(fullKey)] = contact
+	}
 	c.mu.Unlock()
 	c.logger.Debug("ContactV3 parsed", "name", name, "public_key", fmt.Sprintf("%x", fullKey))
 	if c.onContact != nil {
@@ -1045,7 +1056,19 @@ func (c *MeshCoreClient) parseLogRxData(data []byte) {
 		rssi:      rssi,
 		arrivedAt: time.Now(),
 	})
+	// Bound the pending queue, oldest leaving first. Evicted packets never got
+	// their decoded 0x11 frame, so publish them to MQTT raw — what
+	// flushStalePendingRaw would do after their TTL — instead of silently
+	// dropping them from the feed.
 	if len(c.pendingRaw) > 8 {
+		c.mu.RLock()
+		publisher := c.publisher
+		c.mu.RUnlock()
+		for _, p := range c.pendingRaw[:len(c.pendingRaw)-8] {
+			if publisher != nil {
+				publisher.QueuePacket(p.rawData, false, p.snr, p.rssi)
+			}
+		}
 		c.pendingRaw = c.pendingRaw[len(c.pendingRaw)-8:]
 	}
 }

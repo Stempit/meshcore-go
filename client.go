@@ -97,7 +97,13 @@ type MeshCoreClient struct {
 	// The frame handler must never lock sendMu (it delivers confirmations).
 	sendMu sync.Mutex
 
-	// для ожидания подтверждения
+	// для ожидания подтверждения. The slots are command-agnostic: any device
+	// OK (respCodeOk / respCodeSent) or error frame is consumed as the pending
+	// send's confirmation — a stray OK from an unrelated command (the
+	// handshake's trailing one included) can confirm a send spuriously. While
+	// a send waits, no other commands should be issued to the device; sendMu
+	// serialises the Send* methods, but other commands are the caller's to
+	// sequence.
 	sentConfirmCh      chan error // для respCodeSent / respCodeOk
 	deliveredConfirmCh chan error // для pushCodeSendConfirmed
 	confirmMu          sync.Mutex

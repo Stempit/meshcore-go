@@ -148,6 +148,74 @@ func TestChannelV1CorrelationMatchesPSK(t *testing.T) {
 	}
 }
 
+// contactFrame builds a full 148-byte RESP_CODE_CONTACT frame body.
+func contactFrame(pubKey []byte, name string, pathLen byte, path []byte) []byte {
+	f := append([]byte{respCodeContact}, pubKey...)
+	f = append(f, 0, 0, pathLen) // type, flags, encoded out_path_len
+	p := make([]byte, 64)
+	copy(p, path)
+	f = append(f, p...)
+	n := make([]byte, 32)
+	copy(n, name)
+	f = append(f, n...)
+	f = binary.LittleEndian.AppendUint32(f, 1700000000) // last advert seen
+	f = binary.LittleEndian.AppendUint32(f, 0)          // lat
+	f = binary.LittleEndian.AppendUint32(f, 0)          // lon
+	f = binary.LittleEndian.AppendUint32(f, 1700000001) // lastmod
+	return f
+}
+
+// TestContactV3RefreshKeepsFullContact pins the merge rule: a short V3 contact
+// frame refreshes the name of an already-known contact without dropping its
+// path, type or GPS — a full frame must not be required to keep them.
+func TestContactV3RefreshKeepsFullContact(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	c.parseContact(contactFrame(key, "old", 0x02, []byte{0xAA, 0xBB}))
+
+	c.parseContactV3(append(append([]byte{respCodeContact}, key[:6]...), "new"...))
+
+	ct := c.contacts[pubKeyHex(key)]
+	if ct == nil {
+		t.Fatal("contact lost")
+	}
+	if ct.Name != "new" {
+		t.Fatalf("name not refreshed: %q", ct.Name)
+	}
+	if len(ct.Path) != 2 || ct.Path[0] != 0xAA || ct.PathLength != 0x02 {
+		t.Fatalf("full contact data dropped by the V3 refresh: %+v", ct)
+	}
+}
+
+// TestV1MessageDedup pins the dedup rule for pre-V3 firmware: a sender retry
+// (same prefix, timestamp and text) must be processed once.
+func TestV1MessageDedup(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+
+	dmFrame := append([]byte{respCodeContactMsgRecv, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x02, txtTypePlain}, 0, 0, 0, 0)
+	dmFrame = append(dmFrame, "hi"...)
+	dmCalls := 0
+	c.onMessage = func(*Message) { dmCalls++ }
+	c.parseContactMessage(dmFrame)
+	c.parseContactMessage(dmFrame) // sender retry: same timestamp+text
+	if dmCalls != 1 {
+		t.Fatalf("V1 DM not deduplicated: %d callbacks", dmCalls)
+	}
+
+	chFrame := append([]byte{respCodeChannelMsgRecv, 0, 0x02, txtTypePlain}, 0, 0, 0, 0)
+	chFrame = append(chFrame, "Bot: hi"...)
+	chCalls := 0
+	c.onChannelMessage = func(*ChannelMessage) { chCalls++ }
+	c.parseChannelMessage(chFrame)
+	c.parseChannelMessage(chFrame)
+	if chCalls != 1 {
+		t.Fatalf("V1 channel message not deduplicated: %d callbacks", chCalls)
+	}
+}
+
 // The V1 parser must satisfy the same ordering rule.
 func TestChannelMessageV1CallbackSeesFinalMessage(t *testing.T) {
 	c := NewMeshCoreClient(nil)
