@@ -533,12 +533,16 @@ func (c *MeshCoreClient) RequestStats() error {
 	return c.sendGetStats(STATS_TYPE_RADIO)
 }
 
-// GetStats returns the current accumulated stats.
-// Returns nil if no stats have been received yet.
+// GetStats returns a snapshot of the current accumulated stats, or nil if no
+// stats have been received yet. The snapshot is not affected by later frames.
 func (c *MeshCoreClient) GetStats() *CompanionRadioStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.stats
+	if c.stats == nil {
+		return nil
+	}
+	snapshot := *c.stats
+	return &snapshot
 }
 
 // FormatStats returns a human-readable string of all stats.

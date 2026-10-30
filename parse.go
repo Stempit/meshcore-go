@@ -1112,20 +1112,23 @@ func (c *MeshCoreClient) parseStats(data []byte) {
 		return
 	}
 
-	// Get or create stats object (accumulate all stats types)
+	statsType := data[1]
+
+	// Apply the whole frame under the lock: GetStats/FormatStats read the same
+	// struct concurrently and must never observe a torn update.
 	c.mu.Lock()
+	// Get or create stats object (accumulate all stats types)
 	if c.stats == nil {
 		c.stats = &CompanionRadioStats{}
 	}
 	stats := c.stats
 	stats.LastUpdate = time.Now()
-	c.mu.Unlock()
 
-	statsType := data[1]
 	switch statsType {
 	case STATS_TYPE_CORE: // 0 - Core stats
 		// [battery_mv(2)][uptime_secs(4)][errors(2)][queue_len(1)] = 9 bytes after header
 		if len(data) < 11 {
+			c.mu.Unlock()
 			c.logger.Warn("Stats CORE too short", "len", len(data))
 			return
 		}
@@ -1142,6 +1145,7 @@ func (c *MeshCoreClient) parseStats(data []byte) {
 	case STATS_TYPE_RADIO: // 1 - Radio stats
 		// [noise_floor(2)][last_rssi(1)][last_snr(1)][tx_air_secs(4)][rx_air_secs(4)] = 12 bytes after header
 		if len(data) < 14 {
+			c.mu.Unlock()
 			c.logger.Warn("Stats RADIO too short", "len", len(data))
 			return
 		}
@@ -1161,6 +1165,7 @@ func (c *MeshCoreClient) parseStats(data []byte) {
 	case STATS_TYPE_PACKETS: // 2 - Packet stats
 		// [recv(4)][sent(4)][flood_tx(4)][direct_tx(4)][flood_rx(4)][direct_rx(4)][recv_errors(4)] = 26-30 bytes after header
 		if len(data) < 28 {
+			c.mu.Unlock()
 			c.logger.Warn("Stats PACKETS too short", "len", len(data))
 			return
 		}
@@ -1184,13 +1189,19 @@ func (c *MeshCoreClient) parseStats(data []byte) {
 			"recv_errors", stats.PacketsRecvErrors)
 
 	default:
+		c.mu.Unlock()
 		c.logger.Warn("Stats: unknown stats_type", "type", statsType)
 		return
 	}
 
-	c.logger.Debug("Stats received", "stats", fmt.Sprintf("%+v", stats))
+	// Deliver a snapshot: the callback may retain it, and later frames must not
+	// mutate what it saw.
+	snapshot := *stats
+	c.mu.Unlock()
+
+	c.logger.Debug("Stats received", "stats", fmt.Sprintf("%+v", snapshot))
 	if c.onStats != nil {
-		c.onStats(stats)
+		c.onStats(&snapshot)
 	}
 }
 
