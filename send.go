@@ -306,7 +306,11 @@ func (c *MeshCoreClient) write(data []byte) error {
 	err := conn.WriteFrame(data)
 	if err != nil {
 		c.logger.Error("Write failed", "error", err)
-		c.markDisconnected()
+		// Detach: write() also runs on the frame-handler goroutine (the
+		// post-message sendSyncNextMessage, among others), and markDisconnected
+		// waits for that very handler's handlersDone — calling it synchronously
+		// here would deadlock with itself. Same rule as connectionLost.
+		go c.markDisconnected()
 	}
 	return err
 }
