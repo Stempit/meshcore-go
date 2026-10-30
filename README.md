@@ -49,9 +49,10 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
   (serial, TCP) share the firmware's `<`/`>` length-prefixed framing.
 - **Framing/parsing** — decodes device frames, including the raw `0x88 LOG_RX_DATA`
   frames used for the channel-reliability early-stop.
-- **Sending** — DMs (`SendMessageWithRetry`, ack→no-ack fallback) and channel
-  messages (`SendChannelMessageWithRetry`, multi-transmission with adaptive
-  early-stop once the mesh rebroadcasts the packet).
+- **Sending** — DMs (`SendMessageWithRetry`, sent- or delivery-confirmation
+  per call) and channel messages (`SendChannelMessageWithRetry`,
+  multi-transmission with adaptive early-stop once the mesh rebroadcasts the
+  packet).
 - **Adverts / contacts** — self-advert, the contact list and advert stream,
   contact verification keys.
 - **Loose name matching** — `FindContactByNameLoose` and friends: lookups that
@@ -69,6 +70,10 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
   docs.
 - Only one send can be in flight at a time; concurrent senders must serialise
   (the bot's dispatcher does this with a serialized sender).
+- Confirmation slots are command-agnostic: while a send waits for its
+  confirmation, a stray OK/error from any other command — the startup
+  handshake's trailing one included — can complete it spuriously. Issue no
+  other commands while a send is in flight.
 - `CreateClient` / `CreateSerialClient` / `CreateTCPClient` log and panic when
   the transport itself cannot be established; configuration errors are the
   caller's to check.
@@ -79,7 +84,8 @@ client.SendMessageWithRetry(contact, "hello", true, 3, 3, 3*time.Second)
   silently replaces the previous one. There is no TLS/auth: restrict access at
   the network level. (Ethernet builds with `ETHERNET_RAW_LINE=1` speak a
   line-based CLI instead and are not supported by this driver.)
-- `SetLogger` swaps the driver's logger (default: `log` package).
+- `SetLogger` swaps the driver's logger (default: `slog.Default()`, tagged
+  `module=meshcore`). Call before connecting.
 
 ## Related projects
 

@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -97,7 +98,9 @@ func (t *streamTransport) Close() error {
 }
 
 // readLoop parses '>'-framed packets from the stream and feeds complete frames
-// into onFrame, byte by byte to survive arbitrary stream segmentation.
+// into onFrame, byte by byte to survive arbitrary stream segmentation. The
+// bufio.Reader keeps that at one buffered byte per parser step instead of one
+// raw syscall per byte.
 func (t *streamTransport) readLoop() {
 	defer close(t.doneCh)
 
@@ -112,7 +115,7 @@ func (t *streamTransport) readLoop() {
 	var lenBuf [2]byte
 	var frameLen int
 	var frame []byte
-	oneByte := make([]byte, 1)
+	r := bufio.NewReader(t.stream)
 
 	for {
 		select {
@@ -121,7 +124,7 @@ func (t *streamTransport) readLoop() {
 		default:
 		}
 
-		n, err := t.stream.Read(oneByte)
+		b, err := r.ReadByte()
 		if err != nil {
 			select {
 			case <-t.stopCh:
@@ -136,10 +139,6 @@ func (t *streamTransport) readLoop() {
 			t.onLost(err)
 			return
 		}
-		if n == 0 {
-			continue
-		}
-		b := oneByte[0]
 
 		switch state {
 		case stateIdle:

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -77,19 +78,20 @@ func main() {
 	// ─── Sync messages stored on the device ──────────────────────────────────
 	// Everything that arrived while the app was down is pulled once: ask for
 	// the first message and the device chains the rest, ending with the
-	// OnNoMoreMessages callback.
+	// OnNoMoreMessages callback. The callback is registered once and stays —
+	// re-registering after Connect would race the driver's frame handler.
 	syncDone := make(chan struct{})
-	client.OnNoMoreMessages(func() { close(syncDone) })
+	var syncOnce sync.Once
+	client.OnNoMoreMessages(func() { syncOnce.Do(func() { close(syncDone) }) })
 	if err := client.SyncNextMessage(); err != nil {
 		fmt.Printf("sync: %v\n", err)
-		close(syncDone)
+		syncOnce.Do(func() { close(syncDone) })
 	}
 	select {
 	case <-syncDone:
 	case <-time.After(15 * time.Second):
 		fmt.Println("sync timed out, proceeding with what arrived")
 	}
-	client.OnNoMoreMessages(func() {})
 	for _, m := range client.GetAllMessages() {
 		fmt.Printf("stored DM from %x: %s\n", m.SenderKey[:6], m.Text)
 	}

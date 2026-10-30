@@ -9,8 +9,6 @@ import (
 	"tinygo.org/x/bluetooth"
 )
 
-// pendingRawPacket holds a raw RF packet from a 0x88 BLE frame while waiting
-// to be correlated with the corresponding decoded 0x11 channel message frame.
 // ErrDeviceRejected is returned by SendMessageWithRetry when the device
 // explicitly rejects every send attempt (e.g. radio queue full, message too
 // long). Callers should not retry with different confirmation settings because
@@ -23,6 +21,8 @@ var ErrDeviceRejected = fmt.Errorf("device rejected send")
 // arrive after the caller gave up), so a retry can duplicate the message.
 var ErrNoConfirmation = fmt.Errorf("no send confirmation")
 
+// pendingRawPacket holds a raw RF packet from a 0x88 frame while waiting to be
+// correlated with the corresponding decoded channel-message frame.
 type pendingRawPacket struct {
 	rawData   []byte
 	snr       float64
@@ -67,9 +67,9 @@ type MeshCoreClient struct {
 	publisher PacketPublisher
 
 	// pendingRaw holds raw RF packets from 0x88 frames waiting to be correlated
-	// with a decoded 0x11 channel message frame. Both frames arrive sequentially
-	// on the same BLE notification stream, so no mutex is needed — only the BLE
-	// goroutine reads and writes this slice.
+	// with a decoded channel-message frame. Only the frameHandler goroutine —
+	// the sole consumer of notifyCh — reads and writes this slice, so no mutex
+	// is needed.
 	pendingRaw []pendingRawPacket
 
 	// Каналы для обработки

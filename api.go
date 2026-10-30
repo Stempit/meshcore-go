@@ -20,7 +20,9 @@ func (c *MeshCoreClient) GetSelfInfo() *SelfInfo {
 func (c *MeshCoreClient) GetContacts() map[string]*Contact {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	// возвращаем копию
+	// Shallow copy of the map: the *Contact pointers are shared with the
+	// client's cache (mutating a contact updates the client state too — the
+	// bot relies on this to set LastMessageAt).
 	res := make(map[string]*Contact)
 	for k, v := range c.contacts {
 		res[k] = v
@@ -137,6 +139,9 @@ func formatPath(pathLen int, path []byte) string {
 func (c *MeshCoreClient) SendMessageWithRetry(contact *Contact, text string, waitForDelivery bool, savedPathTries, resetPathTries int, timeout time.Duration) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	// Defers run LIFO: this tail sleep executes BEFORE Unlock, i.e. under
+	// sendMu. The pacing is deliberately global — frequent sends lose
+	// messages — so a following send waits it out too.
 	defer time.Sleep(2 * time.Second) // частая отправка приводит к пропаже сообщений
 
 	if savedPathTries < 1 {
@@ -259,10 +264,12 @@ func (c *MeshCoreClient) SendMessageWithRetry(contact *Contact, text string, wai
 	if rejections >= totalAttempts {
 		return fmt.Errorf("%w after %d attempts", ErrDeviceRejected, totalAttempts)
 	}
+	confirmKind := "sent"
+	if waitForDelivery {
+		confirmKind = "delivery"
+	}
 	return fmt.Errorf("%w: no %s confirmation after %d attempts (%d saved-path, %d reset-path)",
-		ErrNoConfirmation,
-		map[bool]string{true: "delivery", false: "sent"}[waitForDelivery],
-		totalAttempts, savedPathTries, resetPathTries)
+		ErrNoConfirmation, confirmKind, totalAttempts, savedPathTries, resetPathTries)
 }
 
 // SendMessage отправляет личное сообщение (без ожидания подтверждения).
@@ -322,6 +329,7 @@ const defaultRepeatWindow = 4 * time.Second
 func (c *MeshCoreClient) SendChannelMessageWithRetry(channel *Channel, text string, waitForDelivery bool, maxRetries, transmissions int, timeout time.Duration) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	// Tail sleep under sendMu (defers run LIFO): paces the next send too.
 	defer time.Sleep(150 * time.Millisecond) // avoid flooding the device
 
 	if transmissions < 1 {

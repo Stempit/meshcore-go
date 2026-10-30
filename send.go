@@ -188,12 +188,6 @@ func (c *MeshCoreClient) sendChannelTextMessageTS(channelIndex byte, text string
 	return timestamp, c.write(buf.Bytes())
 }
 
-// sendGetDeviceTime queries the device's current RTC. The reply arrives as a
-// respCodeCurrTime frame.
-func (c *MeshCoreClient) sendGetDeviceTime() error {
-	return c.write([]byte{cmdGetDeviceTime})
-}
-
 func (c *MeshCoreClient) sendSetDeviceTime(timestamp uint32) error {
 	buf := new(bytes.Buffer)
 	buf.WriteByte(cmdSetDeviceTime)
