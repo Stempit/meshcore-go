@@ -24,7 +24,7 @@ func (c *MeshCoreClient) ConnectTCP(addr string) error {
 // returns a ready-to-use MeshCoreClient. It logs and panics when the transport
 // itself cannot be established, mirroring CreateSerialClient.
 func CreateTCPClient(addr string) *MeshCoreClient {
-	client, selfInfoReceived := newSyncedClient()
+	client, selfInfoReceived := newSyncedClient(nil)
 
 	if err := client.ConnectTCP(addr); err != nil {
 		log().Error("Failed to connect to TCP device", "addr", addr, "error", err)

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"tinygo.org/x/bluetooth"
 )
 
 // ConnectSerial opens a serial port and initialises the MeshCore protocol
@@ -23,11 +25,11 @@ func (c *MeshCoreClient) ConnectSerial(portPath string, baud int) error {
 	)
 }
 
-// newSyncedClient returns a fresh non-BLE client plus the channel that closes
-// when the first SelfInfo arrives. Both stream factories wire the same
-// startup callbacks.
-func newSyncedClient() (*MeshCoreClient, chan struct{}) {
-	client := NewMeshCoreClient(nil)
+// newSyncedClient returns a fresh client plus the channel that closes when the
+// first SelfInfo arrives. All three factories (BLE, serial, TCP) wire the same
+// startup callbacks; adapter is nil for the stream transports.
+func newSyncedClient(adapter *bluetooth.Adapter) (*MeshCoreClient, chan struct{}) {
+	client := NewMeshCoreClient(adapter)
 
 	selfInfoReceived := make(chan struct{})
 	var selfInfoOnce sync.Once
@@ -51,9 +53,9 @@ func newSyncedClient() (*MeshCoreClient, chan struct{}) {
 	return client, selfInfoReceived
 }
 
-// runStartupSync performs the post-connect startup sequence shared by the
-// serial and TCP factories: wait for self info, request channels and contacts.
-// Panics on channel-request failure, matching CreateSerialClient's contract.
+// runStartupSync performs the post-connect startup sequence shared by all
+// three factories: wait for self info, request channels and contacts.
+// Panics on channel-request failure, matching the factories' contract.
 func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, transport string) {
 	log().Info(transport + " connected, waiting for self info...")
 
@@ -88,7 +90,7 @@ func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, tran
 // portPath is the OS device path (e.g. "/dev/ttyUSB0", "/dev/tty.usbmodem*", "COM3").
 // baud should be 115200 for standard MeshCore firmware.
 func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
-	client, selfInfoReceived := newSyncedClient()
+	client, selfInfoReceived := newSyncedClient(nil)
 
 	if err := client.ConnectSerial(portPath, baud); err != nil {
 		log().Error("Failed to connect to serial device", "port", portPath, "error", err)
