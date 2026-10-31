@@ -622,8 +622,12 @@ func (c *MeshCoreClient) SyncNextMessage() error {
 }
 
 // OnNoMoreMessages устанавливает коллбэк для respCodeNoMoreMessages.
+// Можно вызывать в любой момент (в том числе после Connect, когда frame
+// handler уже работает): доступ под мьютексом, вызов коллбэка — вне его.
 func (c *MeshCoreClient) OnNoMoreMessages(f func()) {
+	c.mu.Lock()
 	c.onNoMoreMessages = f
+	c.mu.Unlock()
 }
 
 func (c *MeshCoreClient) GetAllMessages() []*Message {

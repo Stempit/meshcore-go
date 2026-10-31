@@ -718,8 +718,13 @@ func (c *MeshCoreClient) handleFrame(data []byte) {
 		c.parseSent(data)
 	case respCodeNoMoreMessages:
 		c.logger.Debug("Received respCodeNoMoreMessages")
-		if c.onNoMoreMessages != nil {
-			c.onNoMoreMessages()
+		// Snapshot under the lock, invoke outside it: the callback is set
+		// concurrently and may itself call back into the client.
+		c.mu.RLock()
+		onNoMore := c.onNoMoreMessages
+		c.mu.RUnlock()
+		if onNoMore != nil {
+			onNoMore()
 		}
 	case pushCodeSendConfirmed:
 		c.parseSendConfirmed(data)

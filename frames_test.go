@@ -3,6 +3,7 @@ package meshcore
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"sync"
 	"testing"
 )
 
@@ -238,4 +239,28 @@ func TestChannelMessageV1CallbackSeesFinalMessage(t *testing.T) {
 	if got == nil || len(got.PathBytes) != 1 || got.PathBytes[0] != 0xCC || got.PathLength != 1 {
 		t.Fatalf("callback saw incomplete message: %+v", got)
 	}
+}
+
+// TestOnNoMoreMessagesSetRaceWithFrameHandler pins the synchronization rule:
+// the callback is typically set after Connect, when the frame handler is
+// already reading it, so both sides must go through c.mu. Run with -race.
+func TestOnNoMoreMessagesSetRaceWithFrameHandler(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+	frame := []byte{respCodeNoMoreMessages}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			c.OnNoMoreMessages(func() {})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			c.handleFrame(frame)
+		}
+	}()
+	wg.Wait()
 }
