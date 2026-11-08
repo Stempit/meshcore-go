@@ -96,6 +96,8 @@ them into separate one-shot commands.)
   packet).
 - **Device CLI** — `RunCLICommand` runs the device's ASCII CLI commands
   (firmware v14+) and returns the reply text.
+- **Device clock** — `GetDeviceTime` queries the device RTC (unix seconds,
+  returned in UTC).
 - **Adverts / contacts** — self-advert, the contact list and advert stream,
   contact verification keys.
 - **Loose name matching** — `FindContactByNameLoose` and friends: lookups that

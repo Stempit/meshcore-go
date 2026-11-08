@@ -190,6 +190,27 @@ func TestParseDeviceInfoGolden(t *testing.T) {
 	}
 }
 
+// TestGetSelfInfoReturnsSnapshot pins the snapshot contract: parseDeviceInfo
+// mutates the driver's copy in place on every reconnect handshake, so a
+// GetSelfInfo pointer handed out earlier must keep the values it had —
+// callers read those fields from other goroutines (status polling).
+func TestGetSelfInfoReturnsSnapshot(t *testing.T) {
+	c := NewMeshCoreClient(nil)
+	c.selfInfo = &SelfInfo{Name: "node"}
+
+	si := c.GetSelfInfo()
+
+	c.parseDeviceInfo(deviceInfoFrame())
+
+	if si.Model != "" || si.FirmwareVersion != "" {
+		t.Fatalf("handed-out SelfInfo was mutated in place: model=%q version=%q", si.Model, si.FirmwareVersion)
+	}
+	fresh := c.GetSelfInfo()
+	if fresh.Model != "Heltec V3" || fresh.FirmwareVersion != "1.7.2" {
+		t.Fatalf("driver copy not updated: model=%q version=%q", fresh.Model, fresh.FirmwareVersion)
+	}
+}
+
 func TestParseTraceDataGolden(t *testing.T) {
 	c := NewMeshCoreClient(nil)
 	var got *TraceData

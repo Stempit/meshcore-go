@@ -11,10 +11,19 @@ import (
 // Публичные методы API
 // ============================================================================
 
+// GetSelfInfo возвращает снимок SelfInfo из рукопожатия. Снимок не меняется
+// последующими кадрами: устройство присылает модель/версию при каждом
+// реконнекте (DEVICE_QUERY), обновляя внутреннюю копию на месте — поэтому
+// наружу отдаётся копия, и чтение полей из другой горутины (поллинг статуса)
+// не гоняется с writer'ом. Контракт тот же, что у GetStats.
 func (c *MeshCoreClient) GetSelfInfo() *SelfInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.selfInfo
+	if c.selfInfo == nil {
+		return nil
+	}
+	snapshot := *c.selfInfo
+	return &snapshot
 }
 
 func (c *MeshCoreClient) GetContacts() map[string]*Contact {

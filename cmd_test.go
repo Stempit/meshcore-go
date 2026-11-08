@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -284,5 +285,59 @@ func TestDeliverRespDoesNotBlockOnFullChannel(t *testing.T) {
 	c.clearResp(respCodeCliReply, ch)
 	if c.deliverResp(respCodeCliReply, []byte{respCodeOk}) {
 		t.Fatal("waiter still registered after clearResp")
+	}
+}
+
+// TestGetDeviceTime covers the happy path: the device answers with
+// RESP_CODE_CURR_TIME carrying four little-endian unix seconds, returned as a
+// UTC time.
+func TestGetDeviceTime(t *testing.T) {
+	dev, addr := startFakeDevice(t)
+	const wantUnix = uint32(1762612345)
+	dev.setResponder(cmdGetDeviceTime, func(_ int, payload []byte) [][]byte {
+		if len(payload) != 1 || payload[0] != cmdGetDeviceTime {
+			t.Errorf("device got frame %x, want the bare cmdGetDeviceTime byte", payload)
+		}
+		ts := make([]byte, 4)
+		binary.LittleEndian.PutUint32(ts, wantUnix)
+		return [][]byte{append([]byte{respCodeCurrTime}, ts...)}
+	})
+
+	client := NewMeshCoreClient(nil)
+	if err := client.ConnectTCP(addr); err != nil {
+		t.Fatalf("ConnectTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+
+	got, err := client.GetDeviceTime()
+	if err != nil {
+		t.Fatalf("GetDeviceTime: %v", err)
+	}
+	if want := time.Unix(int64(wantUnix), 0).UTC(); !got.Equal(want) {
+		t.Fatalf("time = %v, want %v", got, want)
+	}
+	// Equal compares instants and cannot see a dropped .UTC() — pin the
+	// location itself, the gateway's device_time JSON shape depends on it.
+	if got.Location() != time.UTC {
+		t.Fatalf("time location = %v, want UTC", got.Location())
+	}
+}
+
+// TestGetDeviceTimeShortReply pins the malformed-reply path: a CURR_TIME
+// shorter than code + 4 bytes is an error, not a zero time.
+func TestGetDeviceTimeShortReply(t *testing.T) {
+	dev, addr := startFakeDevice(t)
+	dev.setResponder(cmdGetDeviceTime, func(_ int, _ []byte) [][]byte {
+		return [][]byte{{respCodeCurrTime, 0x01, 0x02}}
+	})
+
+	client := NewMeshCoreClient(nil)
+	if err := client.ConnectTCP(addr); err != nil {
+		t.Fatalf("ConnectTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+
+	if _, err := client.GetDeviceTime(); err == nil {
+		t.Fatal("short CURR_TIME reply accepted")
 	}
 }

@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
@@ -108,4 +109,20 @@ func (c *MeshCoreClient) RunCLICommand(cmd string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(string(data[1:]), " \t\r\n"), nil
+}
+
+// GetDeviceTime запрашивает время RTC устройства (CMD_GET_DEVICE_TIME,
+// ответ RESP_CODE_CURR_TIME) и возвращает его в UTC. Ответ — 4 байта
+// unix-секунд little-endian; ответ короче — это ошибка, а не нулевое время.
+// Расхождение с хостом видно сравнением с time.Now(): устройство живёт по
+// своему RTC.
+func (c *MeshCoreClient) GetDeviceTime() (time.Time, error) {
+	data, err := c.runCommand([]byte{cmdGetDeviceTime}, respCodeCurrTime, defaultCommandTimeout)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(data) < 5 {
+		return time.Time{}, fmt.Errorf("short CURR_TIME reply (%d bytes)", len(data))
+	}
+	return time.Unix(int64(binary.LittleEndian.Uint32(data[1:5])), 0).UTC(), nil
 }
