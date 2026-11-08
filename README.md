@@ -58,6 +58,30 @@ Run [examples/scan](examples/scan/main.go) to list the devices currently
 advertising with their names, addresses and signal strengths;
 `ScanDevices()` returns the same list programmatically.
 
+### Device CLI commands
+
+Companion firmware v14+ runs the device's ASCII CLI over the binary protocol
+(`CMD_RUN_CLI_COMMAND`): `RunCLICommand(cmd)` sends one command and returns
+the device's text reply — `ver`, `get/set radio ...`, `power`, `reboot` and
+everything else listed in the firmware's `docs/cli_commands.md`.
+
+```go
+reply, err := client.RunCLICommand("get tx")
+```
+
+`get` replies start with `"> "`, successful `set` commands answer `OK` (or
+`OK - ...`), failures answer `Error, ...` — those come back as the reply
+string, not as a Go error; a `*DeviceError` (e.g. `unsupported_cmd`) means
+the firmware predates v14. Run [examples/cli](examples/cli/main.go) as a
+one-shot command tool or an interactive terminal:
+
+```sh
+go run ./examples/cli -serial /dev/ttyUSB0 ver "get tx"
+```
+
+(Quote multi-word commands — `"get tx"`, not `get tx`, or the shell splits
+them into separate one-shot commands.)
+
 ## What it handles
 
 - **Transport** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
@@ -70,6 +94,8 @@ advertising with their names, addresses and signal strengths;
   per call) and channel messages (`SendChannelMessageWithRetry`,
   multi-transmission with adaptive early-stop once the mesh rebroadcasts the
   packet).
+- **Device CLI** — `RunCLICommand` runs the device's ASCII CLI commands
+  (firmware v14+) and returns the reply text.
 - **Adverts / contacts** — self-advert, the contact list and advert stream,
   contact verification keys.
 - **Loose name matching** — `FindContactByNameLoose` and friends: lookups that
@@ -90,7 +116,10 @@ advertising with their names, addresses and signal strengths;
 - Confirmation slots are command-agnostic: while a send waits for its
   confirmation, a stray OK/error from any other command — the startup
   handshake's trailing one included — can complete it spuriously. Issue no
-  other commands while a send is in flight.
+  other commands while a send is in flight. `RunCLICommand` serialises
+  device commands among themselves (a dedicated mutex, never held across
+  send retries), but the same rule applies in reverse: issue no message
+  sends while a CLI command waits for its reply.
 - `CreateClient` / `CreateSerialClient` / `CreateTCPClient` log and panic when
   the transport itself cannot be established; configuration errors are the
   caller's to check.

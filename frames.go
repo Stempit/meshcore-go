@@ -675,6 +675,11 @@ func (c *MeshCoreClient) handleFrame(data []byte) {
 	}
 	code := data[0]
 	c.logger.Debug("handleFrame", "code", fmt.Sprintf("0x%02x", code), "len", len(data))
+	// A synchronous command (cmd.go runCommand) waiting on this response code
+	// consumes the frame here; otherwise normal dispatch runs.
+	if c.deliverResp(code, data) {
+		return
+	}
 	switch code {
 	case respCodeSelfInfo:
 		c.parseSelfInfo(data)

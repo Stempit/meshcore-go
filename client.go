@@ -108,6 +108,23 @@ type MeshCoreClient struct {
 	deliveredConfirmCh chan error // для pushCodeSendConfirmed
 	confirmMu          sync.Mutex
 
+	// respWaiters routes command replies to the synchronous command runner
+	// (cmd.go runCommand), keyed by expected response code. Unlike the
+	// confirm slots above, a waiter receives the full reply frame (including
+	// its code byte), so data-carrying responses (CLI_REPLY now, typed
+	// commands later) can be decoded by their caller. At most one command is
+	// in flight at a time (cmdMu), so one channel per code suffices.
+	respWaiters map[byte]chan []byte
+	respMu      sync.Mutex
+
+	// cmdMu serialises synchronous device commands (runCommand): one
+	// request/response pair at a time. Unlike sendMu it is never held across
+	// message-send retry loops, so CLI commands stay responsive while a send
+	// waits. Interleaving a command with an in-flight send remains the
+	// documented caller responsibility (see the confirm-slot comment above):
+	// a device error during the send can be consumed by the command waiter.
+	cmdMu sync.Mutex
+
 	// repeatWatch lets a channel send detect when the mesh has rebroadcast its
 	// own packet. While armed, every incoming 0x88 raw frame is hashed and
 	// compared to repeatHash; a match (a repeater echoing our message) is
@@ -164,6 +181,55 @@ func (c *MeshCoreClient) isDuplicateMessage(key string) bool {
 	}
 	c.seenMsgs[key] = now
 	return false
+}
+
+// armResp registers ch as the response waiter for expect, under both the
+// expected success code and respCodeErr (the device answers a failed command
+// with RESP_CODE_ERR instead of the expected reply). The caller must clear
+// the registration with clearResp when it stops waiting.
+func (c *MeshCoreClient) armResp(expect byte, ch chan []byte) {
+	c.respMu.Lock()
+	if c.respWaiters == nil {
+		c.respWaiters = make(map[byte]chan []byte)
+	}
+	c.respWaiters[expect] = ch
+	if expect != respCodeErr {
+		c.respWaiters[respCodeErr] = ch
+	}
+	c.respMu.Unlock()
+}
+
+// clearResp removes the response waiter registrations that still point at ch.
+// Ownership checks keep a newer command's waiter from being clobbered, same
+// rule as clearSentConfirm.
+func (c *MeshCoreClient) clearResp(expect byte, ch chan []byte) {
+	c.respMu.Lock()
+	if c.respWaiters[expect] == ch {
+		delete(c.respWaiters, expect)
+	}
+	if expect != respCodeErr && c.respWaiters[respCodeErr] == ch {
+		delete(c.respWaiters, respCodeErr)
+	}
+	c.respMu.Unlock()
+}
+
+// deliverResp routes a frame to the waiter registered for its code. It returns
+// false when nobody waits, leaving the frame to the regular dispatch. Like
+// sendConfirm, delivery is non-blocking: a waiter that timed out at the same
+// instant the reply arrived has already given up, and the buffer can hold the
+// frame harmlessly until clearResp drops it.
+func (c *MeshCoreClient) deliverResp(code byte, data []byte) bool {
+	c.respMu.Lock()
+	ch, ok := c.respWaiters[code]
+	c.respMu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- data:
+	default:
+	}
+	return true
 }
 
 func NewMeshCoreClient(adapter *bluetooth.Adapter) *MeshCoreClient {

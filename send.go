@@ -303,6 +303,17 @@ func (c *MeshCoreClient) sendReboot() error {
 	return c.write([]byte{cmdReboot, 'r', 'e', 'b', 'o', 'o', 't'})
 }
 
+// cliCommandFrame builds the CMD_RUN_CLI_COMMAND frame for an ASCII CLI
+// command (firmware v14+): the device runs the text through the CommonCLI
+// handler and answers with RESP_CODE_CLI_REPLY. No "XX|" echo prefix is
+// needed locally — the device only echoes prefixes it received.
+func cliCommandFrame(cmd string) []byte {
+	frame := make([]byte, 0, 1+len(cmd))
+	frame = append(frame, cmdRunCliCommand)
+	frame = append(frame, cmd...)
+	return frame
+}
+
 func (c *MeshCoreClient) write(data []byte) error {
 	c.mu.RLock()
 	conn, connected := c.conn, c.connected

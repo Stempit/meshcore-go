@@ -72,6 +72,7 @@ const (
 	cmdSetDefaultFloodScope = 0x3F
 	cmdGetDefaultFloodScope = 0x40 // reply: respCodeDefaultFloodScope
 	cmdSendRawPacket        = 0x41
+	cmdRunCliCommand        = 0x42 // v14+: run an ASCII CLI command, reply: respCodeCliReply
 )
 
 // Response codes (from device)
@@ -104,6 +105,7 @@ const (
 	respCodeAutoAddConfig     = 0x19
 	respCodeChannelDataRecv   = 0x1B // binary channel data packet
 	respCodeDefaultFloodScope = 0x1C // reply to CMD_GET_DEFAULT_FLOOD_SCOPE
+	respCodeCliReply          = 0x1D // reply to CMD_RUN_CLI_COMMAND: ASCII reply text
 )
 
 // Push codes (async from device)
@@ -175,6 +177,12 @@ const (
 	maxFrameSize       = 172
 	appProtocolVersion = 3
 	contactFrameSize   = 148 // Размер фрейма контакта
+	// maxCliCommandLen is a conservative client-side cap on ASCII CLI command
+	// length. The device does not truncate commands on the binary
+	// CMD_RUN_CLI_COMMAND path — its only bound is the transport frame limit
+	// (175 text bytes) — so 160 keeps frames comfortably inside it. Note the
+	// device DOES truncate replies, to 166 bytes (reply_buf, MyMesh.h).
+	maxCliCommandLen = 160
 )
 
 // Stats types for CMD_GET_STATS
