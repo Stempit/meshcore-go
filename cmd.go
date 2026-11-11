@@ -117,7 +117,14 @@ func (c *MeshCoreClient) RunCLICommand(cmd string) (string, error) {
 // Расхождение с хостом видно сравнением с time.Now(): устройство живёт по
 // своему RTC.
 func (c *MeshCoreClient) GetDeviceTime() (time.Time, error) {
-	data, err := c.runCommand([]byte{cmdGetDeviceTime}, respCodeCurrTime, defaultCommandTimeout)
+	return c.getDeviceTime(defaultCommandTimeout)
+}
+
+// getDeviceTime — ядро GetDeviceTime с настраиваемым таймаутом: SyncTime
+// опрашивает часы коротким таймаутом, чтобы рукопожатие на прошивке без
+// CMD_GET_DEVICE_TIME не зависало на полный defaultCommandTimeout.
+func (c *MeshCoreClient) getDeviceTime(timeout time.Duration) (time.Time, error) {
+	data, err := c.runCommand([]byte{cmdGetDeviceTime}, respCodeCurrTime, timeout)
 	if err != nil {
 		return time.Time{}, err
 	}

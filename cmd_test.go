@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -339,5 +340,88 @@ func TestGetDeviceTimeShortReply(t *testing.T) {
 
 	if _, err := client.GetDeviceTime(); err == nil {
 		t.Fatal("short CURR_TIME reply accepted")
+	}
+}
+
+// TestSyncTimeAheadRefused pins the fast-clock case the bot hit in the field:
+// the firmware's SET_TIME guard (MyMesh.cpp) rejects any time earlier than the
+// device RTC with ERR_CODE_ILLEGAL_ARG, so SyncTime must detect a clock that
+// is already ahead, return a descriptive error, and not send the doomed SET.
+func TestSyncTimeAheadRefused(t *testing.T) {
+	dev, addr := startFakeDevice(t)
+	dev.setDeviceTime(uint32(time.Now().Add(7 * time.Hour).Unix()))
+
+	var sets atomic.Int32
+	dev.setResponder(cmdSetDeviceTime, func(_ int, _ []byte) [][]byte {
+		sets.Add(1)
+		return [][]byte{{respCodeOk}}
+	})
+
+	client := NewMeshCoreClient(nil)
+	if err := client.ConnectTCP(addr); err != nil {
+		t.Fatalf("ConnectTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+
+	err := client.SyncTime()
+	if err == nil {
+		t.Fatal("SyncTime succeeded although the device clock is hours ahead")
+	}
+	if !strings.Contains(err.Error(), "ahead") {
+		t.Errorf("error %q does not name the ahead-drift cause", err)
+	}
+	if n := sets.Load(); n != 0 {
+		t.Errorf("SET_DEVICE_TIME sent %d times although the firmware would reject it", n)
+	}
+}
+
+// TestSyncTimeBehindSetsClock covers the normal case: a device clock behind
+// the host gets SET to host time, and the read-back confirms the firmware
+// applied it.
+func TestSyncTimeBehindSetsClock(t *testing.T) {
+	dev, addr := startFakeDevice(t)
+	dev.setDeviceTime(uint32(time.Now().Add(-10 * time.Minute).Unix()))
+
+	client := NewMeshCoreClient(nil)
+	if err := client.ConnectTCP(addr); err != nil {
+		t.Fatalf("ConnectTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+
+	if err := client.SyncTime(); err != nil {
+		t.Fatalf("SyncTime: %v", err)
+	}
+	got, err := client.GetDeviceTime()
+	if err != nil {
+		t.Fatalf("GetDeviceTime after sync: %v", err)
+	}
+	if off := time.Since(got); off > timeSyncTolerance || off < -timeSyncTolerance {
+		t.Errorf("device clock off by %s after SyncTime", off)
+	}
+}
+
+// TestSyncTimeSetNotApplied covers a firmware that acks SET_DEVICE_TIME but
+// keeps its old clock: the read-back must surface the residual drift instead
+// of reporting a success that never happened.
+func TestSyncTimeSetNotApplied(t *testing.T) {
+	dev, addr := startFakeDevice(t)
+	const stuckAt = uint32(1000000000) // 2001: behind the host, never moves
+	dev.setDeviceTime(stuckAt)
+	dev.setResponder(cmdSetDeviceTime, func(_ int, _ []byte) [][]byte {
+		return [][]byte{{respCodeOk}} // ack, but the RTC stays stuck
+	})
+
+	client := NewMeshCoreClient(nil)
+	if err := client.ConnectTCP(addr); err != nil {
+		t.Fatalf("ConnectTCP: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect() })
+
+	err := client.SyncTime()
+	if err == nil {
+		t.Fatal("SyncTime reported success although the device clock never moved")
+	}
+	if !strings.Contains(err.Error(), "still off") {
+		t.Errorf("error %q does not name the residual drift", err)
 	}
 }

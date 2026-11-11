@@ -125,10 +125,12 @@ func (c *MeshCoreClient) handshake() error {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	if err := c.sendSetDeviceTime(uint32(time.Now().Unix())); err != nil {
-		c.logger.Warn("Failed to sync device time", "error", err)
-	} else {
-		c.logger.Info("Device time synced")
+	// SyncTime verifies the device applied the time and reports a descriptive
+	// error when its clock is ahead of the host (SET_TIME is forward-only on
+	// the firmware). The clock cannot always be corrected, but that must not
+	// block the connection, so a failure here only warns.
+	if err := c.SyncTime(); err != nil {
+		c.logger.Warn("Device time sync failed", "error", err)
 	}
 	return nil
 }

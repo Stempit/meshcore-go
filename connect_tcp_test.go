@@ -24,6 +24,12 @@ type fakeDevice struct {
 	// default handshake answers.
 	responders map[byte]*scriptResponder
 
+	// deviceTime is what the default GET_DEVICE_TIME handler reports; the
+	// default SET_DEVICE_TIME handler stores into it, like the firmware's
+	// RTC. Touched only from the per-connection handle goroutine and the
+	// test's setDeviceTime helper, under mu.
+	deviceTime uint32
+
 	cmds chan []byte
 }
 
@@ -108,7 +114,18 @@ func (d *fakeDevice) handle(conn net.Conn) {
 		case cmdDeviceQuery:
 			// [code][fw_version]; 14 is the current FIRMWARE_VER_CODE.
 			_ = d.writeFrame(conn, []byte{respCodeDeviceInfo, 14})
+		case cmdGetDeviceTime:
+			d.mu.Lock()
+			ts := d.deviceTime
+			d.mu.Unlock()
+			reply := make([]byte, 5)
+			reply[0] = respCodeCurrTime
+			binary.LittleEndian.PutUint32(reply[1:5], ts)
+			_ = d.writeFrame(conn, reply)
 		case cmdSetDeviceTime:
+			d.mu.Lock()
+			d.deviceTime = binary.LittleEndian.Uint32(payload[1:5])
+			d.mu.Unlock()
 			_ = d.writeFrame(conn, []byte{respCodeOk})
 		}
 	}
@@ -134,6 +151,14 @@ func (d *fakeDevice) scriptedReply(cmd byte, payload []byte) [][]byte {
 	}
 	r.n++
 	return r.respond(r.n, payload)
+}
+
+// setDeviceTime presets the fake RTC, e.g. to place the device clock ahead of
+// the host and exercise SyncTime's forward-only rejection path.
+func (d *fakeDevice) setDeviceTime(ts uint32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.deviceTime = ts
 }
 
 // closeConn simulates the device disappearing (reboot, power loss).

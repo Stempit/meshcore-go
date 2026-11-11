@@ -98,9 +98,52 @@ func (c *MeshCoreClient) SelfName() string {
 	return ""
 }
 
+// timeSyncTolerance is how far the device clock may sit from the host clock
+// before SyncTime insists on correcting it.
+const timeSyncTolerance = 2 * time.Second
+
+// timeSyncProbeTimeout bounds the device-clock reads inside SyncTime: the
+// handshake calls it on every connect, and firmware without
+// CMD_GET_DEVICE_TIME must cost a short wait, not a full command timeout.
+const timeSyncProbeTimeout = 2 * time.Second
+
+// SyncTime sets the device RTC to the host's current time and verifies the
+// device applied it.
+//
+// The companion firmware only moves the clock FORWARD: a SET_TIME whose time
+// is earlier than the device's own RTC is rejected with ERR_CODE_ILLEGAL_ARG
+// (companion_radio/MyMesh.cpp handleCmdFrame — advert anti-replay depends on
+// monotonic sender timestamps). A device clock that is already ahead of the
+// host therefore cannot be corrected over the protocol, and SyncTime detects
+// that case up front and returns a descriptive error instead of writing a
+// time the firmware will silently reject. Fixing a fast clock needs a
+// device-side intervention: a power cycle (volatile RTC) or firmware that
+// permits backward sets. A failed GET (very old firmware) falls through to
+// the plain SET, preserving the pre-verification behavior.
 func (c *MeshCoreClient) SyncTime() error {
-	now := uint32(time.Now().Unix())
-	return c.sendSetDeviceTime(now)
+	now := time.Now()
+	if got, err := c.getDeviceTime(timeSyncProbeTimeout); err == nil {
+		off := got.Sub(now)
+		if off > timeSyncTolerance {
+			return fmt.Errorf("device clock ahead of host by %s; firmware SET_TIME is forward-only, power-cycle the device or permit backward sets in firmware",
+				off.Round(time.Second))
+		}
+		if off >= -timeSyncTolerance {
+			return nil // already in step
+		}
+		// Otherwise the device clock is behind beyond the tolerance: set it.
+	}
+	if err := c.sendSetDeviceTime(uint32(time.Now().Unix())); err != nil {
+		return err
+	}
+	got, err := c.getDeviceTime(timeSyncProbeTimeout)
+	if err != nil {
+		return fmt.Errorf("SET_TIME sent, but the device clock could not be read back: %w", err)
+	}
+	if off := got.Sub(time.Now()); off.Abs() > timeSyncTolerance {
+		return fmt.Errorf("device clock still off by %s after SET_TIME", off.Round(time.Second))
+	}
+	return nil
 }
 
 func (c *MeshCoreClient) RequestContacts(since uint32) error {
