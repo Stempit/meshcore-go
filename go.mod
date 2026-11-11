@@ -5,8 +5,8 @@ go 1.27.1
 require (
 	filippo.io/edwards25519 v1.2.0
 	go.bug.st/serial v1.8.0
-	golang.org/x/crypto v0.58.0
-	tinygo.org/x/bluetooth v0.16.0
+	golang.org/x/crypto v0.59.0
+	tinygo.org/x/bluetooth v0.17.0
 )
 
 require (
@@ -19,7 +19,7 @@ require (
 	github.com/soypat/seqs v0.0.0-20260125140838-2c1c6b1bd69e // indirect
 	github.com/tinygo-org/cbgo v0.1.0 // indirect
 	github.com/tinygo-org/pio v0.3.0 // indirect
-	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	tinygo.org/x/espradio v0.4.0 // indirect
+	golang.org/x/exp v0.0.0-20261109185158-a52e3aef5920 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	tinygo.org/x/espradio v0.5.0 // indirect
 )
