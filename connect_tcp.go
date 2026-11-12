@@ -22,7 +22,7 @@ func (c *MeshCoreClient) ConnectTCP(addr string) error {
 // CreateTCPClient connects to the companion device at addr (e.g.
 // "192.168.1.50:5000"), performs the MeshCore initialisation handshake, and
 // returns a ready-to-use MeshCoreClient. It logs and panics when the transport
-// itself cannot be established, mirroring CreateSerialClient.
+// cannot be established or the startup sync fails, mirroring CreateSerialClient.
 func CreateTCPClient(addr string) *MeshCoreClient {
 	client, selfInfoReceived := newSyncedClient(nil)
 
@@ -31,7 +31,10 @@ func CreateTCPClient(addr string) *MeshCoreClient {
 		panic(err)
 	}
 
-	runStartupSync(client, selfInfoReceived, "TCP")
+	if err := runStartupSync(client, selfInfoReceived, "TCP"); err != nil {
+		log().Error("Failed startup sync", "transport", "TCP", "error", err)
+		panic(err)
+	}
 
 	return client
 }

@@ -53,10 +53,11 @@ func newSyncedClient(adapter *bluetooth.Adapter) (*MeshCoreClient, chan struct{}
 	return client, selfInfoReceived
 }
 
-// runStartupSync performs the post-connect startup sequence shared by all
-// three factories: wait for self info, request channels and contacts.
-// Panics on channel-request failure, matching the factories' contract.
-func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, transport string) {
+// runStartupSync performs the post-connect startup sequence shared by the
+// client factories: wait for self info, request channels and contacts.
+// A channel-request failure comes back as an error — NewClient passes it on
+// to the caller, the panicking factories log and panic on it.
+func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, transport string) error {
 	log().Info(transport + " connected, waiting for self info...")
 
 	select {
@@ -68,8 +69,7 @@ func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, tran
 
 	log().Info("Requesting channels (count=8)")
 	if err := client.RequestChannels(8); err != nil {
-		log().Error("Failed to request channels", "error", err)
-		panic(err)
+		return fmt.Errorf("requesting channels: %w", err)
 	}
 
 	time.Sleep(5 * time.Second)
@@ -83,6 +83,8 @@ func runStartupSync(client *MeshCoreClient, selfInfoReceived chan struct{}, tran
 
 	time.Sleep(3 * time.Second)
 	log().Info(transport + " client started")
+
+	return nil
 }
 
 // CreateSerialClient opens the given serial port, performs the MeshCore
@@ -97,7 +99,10 @@ func CreateSerialClient(portPath string, baud int) *MeshCoreClient {
 		panic(err)
 	}
 
-	runStartupSync(client, selfInfoReceived, "Serial")
+	if err := runStartupSync(client, selfInfoReceived, "Serial"); err != nil {
+		log().Error("Failed startup sync", "transport", "Serial", "error", err)
+		panic(err)
+	}
 
 	return client
 }

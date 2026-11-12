@@ -110,8 +110,8 @@ type SelfInfo struct {
 type TraceData struct {
 	Tag        uint32
 	AuthCode   uint32
-	PathHashes []byte    // one byte per hop, node-ID hash
-	PathSNRs   []float32 // dB, one entry per hop
+	PathHashes []byte    // node-ID hash entries exactly as sent (1<<(flags&3) bytes per hop)
+	PathSNRs   []float32 // dB, one entry per hop: SNR at hop i of the packet from the previous entry
 	FinalSNR   float32   // SNR on the last leg to this node
 }
 
