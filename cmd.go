@@ -210,7 +210,10 @@ func (c *MeshCoreClient) RemoveContact(contact *Contact) error {
 // (CMD_GET_CONTACT_BY_KEY). Ответ — полный RESP_CODE_CONTACT, тот же фрейм,
 // что и при синхронизации: он разбирается обычным parseContact, поэтому кэш
 // обновляется и onContact срабатывает, как для любого фрейма от устройства.
-// Ошибка NOT_FOUND приходит как *DeviceError.
+// Ошибка NOT_FOUND приходит как *DeviceError. Наружу уходит глубокая копия,
+// как и в ListContacts: V3-кадры обновляют кэшированные контакты на месте
+// (parseContactMessageV3), поэтому живой указатель гонялся бы с
+// горутиной-обработчиком кадров.
 func (c *MeshCoreClient) GetContactByKey(pubKey []byte) (*Contact, error) {
 	frame, err := buildGetContactByKeyFrame(pubKey)
 	if err != nil {
@@ -222,8 +225,12 @@ func (c *MeshCoreClient) GetContactByKey(pubKey []byte) (*Contact, error) {
 	}
 	c.parseContact(data)
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.contacts[pubKeyHex(pubKey[:pubKeySize])], nil
+	cached := c.contacts[pubKeyHex(pubKey[:pubKeySize])]
+	c.mu.RUnlock()
+	if cached == nil {
+		return nil, nil
+	}
+	return copyContact(cached), nil
 }
 
 // ============================================================================
