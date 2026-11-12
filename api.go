@@ -546,13 +546,8 @@ func (c *MeshCoreClient) ResetContactPath(contact *Contact) error {
 	return c.sendResetPath(contact.PublicKey)
 }
 
-func (c *MeshCoreClient) RemoveContact(contact *Contact) error {
-	return c.sendRemoveContact(contact.PublicKey)
-}
-
-func (c *MeshCoreClient) SetChannel(channelIndex int, name string, psk []byte) error {
-	return c.sendSetChannel(byte(channelIndex), name, psk)
-}
+// RemoveContact и SetChannel переехали в cmd.go: синхронные команды
+// администрирования живут рядом с runCommand.
 
 func (c *MeshCoreClient) SetNodeName(name string) error {
 	return c.sendSetAdvertName(name)

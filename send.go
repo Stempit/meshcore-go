@@ -44,6 +44,31 @@ func (c *MeshCoreClient) sendGetChannel(index byte) error {
 }
 
 func (c *MeshCoreClient) sendSetChannel(index byte, name string, psk []byte) error {
+	frame, err := buildSetChannelFrame(index, name, psk)
+	if err != nil {
+		return err
+	}
+	return c.write(frame)
+}
+
+// buildSetChannelFrame собирает фрейм CMD_SET_CHANNEL (0x20).
+//
+// Формат (MyMesh.cpp, handleCmdFrame):
+//
+//	[code(1)][channel_idx(1)][name(32, null-padded)][secret(16)]
+//
+// Прошивка поддерживает только 128-битные ключи: вариант с 32-байтным
+// секретом отвечает ERR_CODE_UNSUPPORTED_CMD, а короткий фрейм вообще не
+// распознаётся — поэтому psk обязан быть ровно 16 байт. Имя обрезается до
+// 31 символа (как делает прошивка через StrHelper::strncpy).
+//
+// «Удаление» канала = пустое имя + нулевой PSK (companion_protocol.md,
+// «Deleting a channel»): именованный слот с нулевым PSK продолжает ловить
+// null-key трафик, поэтому при удалении имя тоже затирается.
+func buildSetChannelFrame(index byte, name string, psk []byte) ([]byte, error) {
+	if len(psk) != 16 {
+		return nil, fmt.Errorf("channel PSK must be exactly 16 bytes, got %d (firmware supports only 128-bit channel keys)", len(psk))
+	}
 	buf := new(bytes.Buffer)
 	buf.WriteByte(cmdSetChannel)
 	buf.WriteByte(index)
@@ -56,11 +81,8 @@ func (c *MeshCoreClient) sendSetChannel(index byte, name string, psk []byte) err
 	for i := len(nameBytes); i < 32; i++ {
 		buf.WriteByte(0)
 	}
-	// PSK: 16 байт, нули если короче
-	pskPadded := make([]byte, 16)
-	copy(pskPadded, psk)
-	buf.Write(pskPadded)
-	return c.write(buf.Bytes())
+	buf.Write(psk)
+	return buf.Bytes(), nil
 }
 
 func (c *MeshCoreClient) sendTextMessage(recipient []byte, text string, attempt byte, timestamp uint32) (string, error) {
@@ -234,8 +256,27 @@ func (c *MeshCoreClient) sendResetPath(pubKey []byte) error {
 }
 
 func (c *MeshCoreClient) sendUpdateContact(contact *Contact) error {
+	frame, err := buildUpdateContactFrame(contact)
+	if err != nil {
+		return err
+	}
+	return c.write(frame)
+}
+
+// buildUpdateContactFrame собирает фрейм CMD_ADD_UPDATE_CONTACT (0x09).
+//
+// Формат (MyMesh.cpp, updateContactFromFrame):
+//
+//	[code(1)][pub_key(32)][type(1)][flags(1)][out_path_len(1)][path(64)]
+//	[name(32)][last_advert_timestamp(4)][gps_lat(4)][gps_lon(4)][lastmod(4)]
+//
+// lastmod = 0 — прошивка проставит текущее RTC-время устройства. Этот же
+// lastmod становится версией контакта для CMD_GET_CONTACTS 'since'.
+// Валидации pubkey в прошивке нет — любые 32 байта будут сохранены, поэтому
+// проверку длины делает клиент.
+func buildUpdateContactFrame(contact *Contact) ([]byte, error) {
 	if len(contact.PublicKey) < 32 {
-		return fmt.Errorf("update contact requires full 32-byte public key")
+		return nil, fmt.Errorf("update contact requires full 32-byte public key")
 	}
 	buf := new(bytes.Buffer)
 	buf.WriteByte(cmdAddUpdateContact)
@@ -272,27 +313,55 @@ func (c *MeshCoreClient) sendUpdateContact(contact *Contact) error {
 	_ = binary.Write(buf, binary.LittleEndian, lonInt)
 	// last_modified (optional)
 	_ = binary.Write(buf, binary.LittleEndian, uint32(0))
-	return c.write(buf.Bytes())
+	return buf.Bytes(), nil
 }
 
-func (c *MeshCoreClient) sendGetContactByKey(pubKey []byte) error {
+// buildGetContactByKeyFrame собирает CMD_GET_CONTACT_BY_KEY (0x1E). Прошивка
+// отвечает полным 148-байтовым RESP_CODE_CONTACT (writeContactRespFrame) или
+// ERR_CODE_NOT_FOUND.
+func buildGetContactByKeyFrame(pubKey []byte) ([]byte, error) {
 	if len(pubKey) < pubKeySize {
-		return fmt.Errorf("get contact by key requires full %d-byte public key", pubKeySize)
+		return nil, fmt.Errorf("get contact by key requires full %d-byte public key", pubKeySize)
 	}
 	buf := new(bytes.Buffer)
 	buf.WriteByte(cmdGetContactByKey)
 	buf.Write(pubKey[:pubKeySize])
-	return c.write(buf.Bytes())
+	return buf.Bytes(), nil
 }
 
-func (c *MeshCoreClient) sendRemoveContact(pubKey []byte) error {
+// sendGetContactByKey — fire-and-forget запись CMD_GET_CONTACT_BY_KEY. Нужна
+// на горутине обработчика фреймов (parseAdvert), где runCommand запрещён:
+// ожидание ответа заблокировало бы доставку этого самого ответа.
+func (c *MeshCoreClient) sendGetContactByKey(pubKey []byte) error {
+	frame, err := buildGetContactByKeyFrame(pubKey)
+	if err != nil {
+		return err
+	}
+	return c.write(frame)
+}
+
+// buildRemoveContactFrame собирает CMD_REMOVE_CONTACT (0x0F). Прошивка отвечает
+// OK или ERR_CODE_NOT_FOUND. Push 0x8F (CONTACT_DELETED) при этом не шлётся —
+// он приходит только когда устройство само вытесняет контакт при переполнении.
+func buildRemoveContactFrame(pubKey []byte) ([]byte, error) {
 	if len(pubKey) < 32 {
-		return fmt.Errorf("remove contact requires full 32-byte public key")
+		return nil, fmt.Errorf("remove contact requires full 32-byte public key")
 	}
 	buf := new(bytes.Buffer)
 	buf.WriteByte(cmdRemoveContact)
 	buf.Write(pubKey[:32])
-	return c.write(buf.Bytes())
+	return buf.Bytes(), nil
+}
+
+// sendRemoveContact — fire-and-forget запись CMD_REMOVE_CONTACT для горутины
+// обработчика фреймов (handleContactsFull), по той же причине, что и
+// sendGetContactByKey выше.
+func (c *MeshCoreClient) sendRemoveContact(pubKey []byte) error {
+	frame, err := buildRemoveContactFrame(pubKey)
+	if err != nil {
+		return err
+	}
+	return c.write(frame)
 }
 
 func (c *MeshCoreClient) sendSyncNextMessage() error {

@@ -58,9 +58,14 @@ type MeshCoreClient struct {
 	syncLastmod       uint32              // max lastmod seen across all parsed contact frames
 	pendingNewContact *Contact            // contact from last pushCodeNewAdvert, may not be stored on device yet
 	channels          map[int]*Channel
-	messages          map[string][]*Message // ключ – hex(senderKey)
-	channelMsgs       map[int][]*ChannelMessage
-	stats             *CompanionRadioStats // накопленная статистика (все типы)
+	// maxChannels — число слотов каналов с устройства (CMD_DEVICE_QUERY,
+	// MAX_GROUP_CHANNELS; 1/8/40 в зависимости от платы). 0 = неизвестно
+	// (старая прошивка < fw3), тогда поиск пустого слота ограничивается 8 —
+	// как в стартовой синхронизации.
+	maxChannels int
+	messages    map[string][]*Message // ключ – hex(senderKey)
+	channelMsgs map[int][]*ChannelMessage
+	stats       *CompanionRadioStats // накопленная статистика (все типы)
 
 	// publisher is an optional sink for received/transmitted RF packets
 	// (e.g. the MQTT bridge). nil when no publisher is attached.
@@ -79,6 +84,7 @@ type MeshCoreClient struct {
 
 	// Коллбэки
 	onContact        func(*Contact)
+	onContactDeleted func(pubKey []byte)
 	onChannel        func(*Channel)
 	onMessage        func(*Message)
 	onChannelMessage func(*ChannelMessage)

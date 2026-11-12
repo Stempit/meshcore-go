@@ -1,6 +1,9 @@
 package meshcore
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ============================================================================
 // Типы данных
@@ -29,6 +32,61 @@ type Channel struct {
 	PSK         []byte // поле для ключа канала
 	UnreadCount int
 	IsEmpty     bool
+}
+
+// PublicKeyHex возвращает публичный ключ контакта в hex (64 символа) — то,
+// чем контакт адресуется в QR meshcore://contact/add?... и в логах.
+func (ct *Contact) PublicKeyHex() string {
+	if ct == nil {
+		return ""
+	}
+	return pubKeyHex(ct.PublicKey)
+}
+
+// TypeName возвращает человекочитаемое имя типа контакта (ADV_TYPE_*,
+// AdvertDataHelpers.h): chat / repeater / room / sensor; для прочих значений —
+// "type<N>".
+func (ct *Contact) TypeName() string {
+	if ct == nil {
+		return ""
+	}
+	switch ct.Type {
+	case AdvTypeChat:
+		return "chat"
+	case AdvTypeRepeater:
+		return "repeater"
+	case AdvTypeRoom:
+		return "room"
+	case AdvTypeSensor:
+		return "sensor"
+	default:
+		return fmt.Sprintf("type%d", ct.Type)
+	}
+}
+
+// PSKHex возвращает ключ канала в hex (32 символа) — тот самый секрет, что
+// идёт в QR meshcore://channel/add?name=...&secret=<hex> (docs/qr_codes.md).
+func (ch *Channel) PSKHex() string {
+	if ch == nil {
+		return ""
+	}
+	return pubKeyHex(ch.PSK)
+}
+
+// HashByte возвращает первый байт SHA256(PSK) — хеш, по которому прошивка
+// (BaseChatMesh::setChannel) адресует групповые пакеты; им же подписаны сырые
+// 0x88-кадры, так что по нему можно сопоставить канал с raw-пакетом. Пустой
+// слот с нулевым PSK имеет валидный хеш, как и в прошивке; PSK короче 16 байт
+// даёт 0.
+func (ch *Channel) HashByte() byte {
+	if ch == nil {
+		return 0
+	}
+	hash, ok := channelHashByte(ch.PSK)
+	if !ok {
+		return 0
+	}
+	return hash
 }
 
 type Message struct {

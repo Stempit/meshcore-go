@@ -84,6 +84,114 @@ go run ./examples/cli -serial /dev/ttyUSB0 ver "get tx"
 (Команды из нескольких слов берите в кавычки — `"get tx"`, а не `get tx`,
 иначе шелл разобьёт их на отдельные команды.)
 
+### Администрирование контактов и каналов
+
+Драйвер умеет управлять тем, что хранит устройство: контактами (chat,
+repeater, room server, sensor) и каналами (групповые чаты). Каждый вызов
+ждёт ответа устройства: успех — `nil`/результат, отказ — `*DeviceError`
+(коды прошивки `ERR_CODE_*`: `table_full`, `not_found`, `unsupported_cmd`,
+`illegal_arg`), молчание устройства — `ErrNoResponse`.
+
+**Контакты.** Полный 32-байтный публичный ключ берётся из advert
+(`OnAdvert`), `GetContactByKey` или QR-кода
+(`meshcore://contact/add?public_key=<64 hex>&type=<1-4>`, см.
+`docs/qr_codes.md` прошивки):
+
+```go
+// репитер, найденный по эфирному advert или из QR-кода
+err := client.AddContact(&meshcore.Contact{
+    PublicKey: key,                // ровно 32 байта (обязательно)
+    Name:      "Repeater-1",       // обрезается до 31 символа, как в прошивке
+    Type:      meshcore.AdvTypeRepeater, // Chat=1, Repeater=2, Room=3, Sensor=4
+    Flags:     meshcore.ContactFlagFavorite, // битовая маска; 0 = без флагов
+})
+
+ct, err := client.GetContactByKey(key) // прочитать контакт обратно (кэш + колбэк)
+err = client.RemoveContact(contact)    // удалить; *DeviceError not_found, если нет
+```
+
+`AddContact` и добавляет новый контакт, и обновляет существующий — прошивка
+ищет запись по полному ключу. `table_full` — хранилище устройства заполнено:
+удалите неактивный контакт и повторите.
+
+**Каналы.** На уровне протокола «войти в канал» — это записать его в
+свободный слот (`CMD_SET_CHANNEL`); отдельной команды join нет. Драйвер сам
+выбирает первый свободный слот и возвращает заполненный `Channel`:
+
+```go
+// создать приватный канал: случайный 16-байтный ключ, раздайте участникам
+ch, err := client.CreatePrivateChannel("Team")
+qr := fmt.Sprintf("meshcore://channel/add?name=%s&secret=%s",
+    url.QueryEscape(ch.Name), hex.EncodeToString(ch.PSK))
+
+// войти в приватный канал по QR / присланному ключу
+secret, _ := hex.DecodeString("<32 hex-символов из QR>")
+ch, err = client.AddChannel("Team", secret) // PSK ровно 16 байт
+
+// стандартный публичный канал и хештег-канал
+client.JoinPublicChannel("")        // алиас по умолчанию "Public" (PSK прошивки)
+client.JoinHashtagChannel("#test")  // ключ = SHA256("#test")[:16], совместимо с приложением
+
+client.RemoveChannel(ch.Index) // освободить слот (пустое имя + нулевой ключ)
+```
+
+Что стоит знать:
+
+- Ключи каналов — ровно **16 байт** (128 бит; 256-битные прошивка отвергает),
+  имена каналов и контактов обрезаются до **31 символа** — те же лимиты, что
+  у официальных приложений.
+- `JoinHashtagChannel` выводит ключ на клиенте (первые 16 байт
+  `SHA256("#имя")`) — прошивка о хештегах не знает, поэтому каналы,
+  созданные так, совместимы с официальными приложениями. Ведущий `#`
+  можно опустить — каноничное имя хранится с ним.
+- `OnContactDeleted(func(pubKey []byte))` срабатывает, когда контакт удалило
+  само **устройство** (push `0x8F`, вытеснение при переполнении хранилища) —
+  удобно, чтобы синхронизировать базу бота. Ваши вызовы `RemoveContact` этот
+  колбэк не вызывают — их результат виден в возвращённой ошибке.
+- Эти вызовы ждут ответа устройства, поэтому не отправляйте сообщения, пока
+  один из них в полёте (то же правило «по одной команде», что и у
+  `RunCLICommand`).
+- Проверить, что применилось: `GetContactByKey`, `GetChannels()` /
+  `RequestChannels(n)`, `RequestContacts(0)`.
+
+**Списки со всеми деталями.** `ListContacts()` / `ListChannels()` сначала
+запрашивают актуальное состояние устройства (полная итерация `GET_CONTACTS` /
+опрос `GET_CHANNEL` по всем слотам) и возвращают полные записи — публичные
+ключи, PSK, пути, метки времени — как глубокие копии: их можно менять,
+сериализовать и отдавать в UI, не задевая кэш драйвера:
+
+```go
+contacts, err := client.ListContacts() // по имени, свежие данные с устройства
+for _, ct := range contacts {
+    fmt.Printf("%-16s %-8s %s\n", ct.Name, ct.TypeName(), ct.PublicKeyHex())
+}
+
+channels, err := client.ListChannels() // все слоты по индексу, пустые тоже
+for _, ch := range channels {
+    if ch.IsEmpty {
+        continue
+    }
+    fmt.Printf("[%d] %-20s psk %s hash %02x\n",
+        ch.Index, ch.Name, ch.PSKHex(), ch.HashByte())
+}
+```
+
+Те же производные хелперы работают на любом значении `Contact`/`Channel`,
+включая полученные из `GetContacts()` / `GetChannelByName()`: `PublicKeyHex()`,
+`TypeName()` (chat/repeater/room/sensor), `PSKHex()` и `HashByte()` —
+1-байтовый хеш канала, которым прошивка адресует групповые пакеты (удобно для
+корреляции сырых `0x88`-кадров). `GetContacts()`/`GetChannels()` остаются
+дешёвыми читателями кэша (общие указатели, без обращения к устройству);
+`List*` — когда данные должны быть актуальными.
+
+[examples/contacts-channels](examples/contacts-channels/main.go) показывает
+весь сценарий на реальном устройстве (создать/войти, напечатать, убрать за
+собой):
+
+```sh
+go run ./examples/contacts-channels -serial /dev/ttyUSB0
+```
+
 ## Что умеет
 
 - **Транспорт** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
@@ -98,6 +206,10 @@ go run ./examples/cli -serial /dev/ttyUSB0 ver "get tx"
   ранним стопом, когда меш ретранслировал пакет).
 - **CLI устройства** — `RunCLICommand` исполняет ASCII-CLI-команды устройства
   (прошивка v14+) и возвращает текст ответа.
+- **Администрирование контактов и каналов** — добавление/удаление контактов
+  всех типов (chat, repeater, room server, sensor), чтение по ключу,
+  создание приватных каналов, вход в публичные/хештег-каналы, освобождение
+  слотов каналов (см. раздел выше).
 - **Адверты / контакты** — собственный адверт, список контактов, поток
   адвертов, ключи верификации контактов.
 - **Нечёткий поиск имён** — `FindContactByNameLoose` и companions: поиск,

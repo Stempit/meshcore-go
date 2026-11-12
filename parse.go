@@ -147,6 +147,9 @@ func (c *MeshCoreClient) parseDeviceInfo(data []byte) {
 			c.selfInfo.FirmwareVersion = version
 			c.selfInfo.Model = model
 		}
+		// max_channels — число слотов групповых каналов (MAX_GROUP_CHANNELS,
+		// MyMesh.cpp CMD_DEVICE_QUERY); нужно findEmptyChannelSlot.
+		c.maxChannels = maxChannels
 		c.mu.Unlock()
 	}
 }
@@ -419,6 +422,9 @@ func (c *MeshCoreClient) parseNewAdvert(data []byte) {
 
 // parseContactDeleted handles PUSH_CODE_CONTACT_DELETED (0x8F).
 // Frame: [code(1)][pub_key(32)]. Removes the contact from the local cache.
+// The push means the device deleted the contact itself (evicted on storage
+// overflow) — explicit RemoveContact replies with OK instead and does not
+// produce this frame.
 func (c *MeshCoreClient) parseContactDeleted(data []byte) {
 	if len(data) < 1+pubKeySize {
 		c.logger.Warn("parseContactDeleted: frame too short", "len", len(data))
@@ -430,6 +436,9 @@ func (c *MeshCoreClient) parseContactDeleted(data []byte) {
 	delete(c.contacts, keyHex)
 	c.mu.Unlock()
 	c.logger.Info("Contact deleted by device", "pub_key", fmt.Sprintf("%x", pubKey))
+	if c.onContactDeleted != nil {
+		c.onContactDeleted(append([]byte(nil), pubKey...))
+	}
 }
 
 // handleContactsFull handles PUSH_CODE_CONTACTS_FULL (0x90). The device has

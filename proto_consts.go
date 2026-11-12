@@ -136,21 +136,31 @@ const (
 	txtTypeSigned  = 0x02
 )
 
-// Contact/advertisement types
+// Contact/advertisement types (ADV_TYPE_*, AdvertDataHelpers.h). Используются
+// в Contact.Type и как аргумент AddContact.
 const (
-	advTypeChat     = 1
-	advTypeRepeater = 2
-	advTypeRoom     = 3
-	advTypeSensor   = 4
+	AdvTypeChat     = 1
+	AdvTypeRepeater = 2
+	AdvTypeRoom     = 3
+	AdvTypeSensor   = 4
 )
 
-// Contact flags
+// Contact flags (ContactInfo.flags, ContactInfo.h: isFav/isTelemBaseAllowed/...)
 const (
-	contactFlagFavorite = 0x01
-	contactFlagTeleBase = 0x02
-	contactFlagTeleLoc  = 0x04
-	contactFlagTeleEnv  = 0x08
+	ContactFlagFavorite = 0x01
+	ContactFlagTeleBase = 0x02
+	ContactFlagTeleLoc  = 0x04
+	ContactFlagTeleEnv  = 0x08
 )
+
+// PublicChannelPSK — ключ стандартного публичного канала MeshCore. В прошивке
+// он задаётся строкой PUBLIC_GROUP_PSK "izOH6cXN6mrJ5e26oRXNcg==" (MyMesh.cpp,
+// addChannel("Public", ...) при загрузке) и занимает слот 0. Декодированные
+// 16 байт; hex: 8b3387e9c5cdea6ac9e5edbaa115cd72.
+var PublicChannelPSK = []byte{
+	0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
+	0xc9, 0xe5, 0xed, 0xba, 0xa1, 0x15, 0xcd, 0x72,
+}
 
 // Auto-add flags
 const (

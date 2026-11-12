@@ -82,6 +82,111 @@ go run ./examples/cli -serial /dev/ttyUSB0 ver "get tx"
 (Quote multi-word commands — `"get tx"`, not `get tx`, or the shell splits
 them into separate one-shot commands.)
 
+### Contacts & channels administration
+
+The driver can manage what the device stores — contacts (chat, repeater,
+room server, sensor) and channels (group chats). Every call waits for the
+device's answer: success returns `nil`/the result, a rejection comes back as
+`*DeviceError` (the firmware's `ERR_CODE_*`: `table_full`, `not_found`,
+`unsupported_cmd`, `illegal_arg`), a silent device as `ErrNoResponse`.
+
+**Contacts.** The 32-byte public key comes from an advert (`OnAdvert`),
+`GetContactByKey`, or a QR code (`meshcore://contact/add?public_key=<64 hex>&type=<1-4>`
+per the firmware's `docs/qr_codes.md`):
+
+```go
+// a repeater you scanned or got from a QR code
+err := client.AddContact(&meshcore.Contact{
+    PublicKey: key,                // full 32 bytes (required)
+    Name:      "Repeater-1",       // trimmed to 31 chars, like the firmware
+    Type:      meshcore.AdvTypeRepeater, // Chat=1, Repeater=2, Room=3, Sensor=4
+    Flags:     meshcore.ContactFlagFavorite, // bitmask; 0 = no flags
+})
+
+ct, err := client.GetContactByKey(key) // read one contact back (cache + callback refresh)
+err = client.RemoveContact(contact)    // delete; *DeviceError not_found if absent
+```
+
+`AddContact` adds a new contact and updates an existing one alike — the
+firmware matches by the full key. `table_full` means the device storage is
+full: remove an inactive contact and retry.
+
+**Channels.** On the wire, joining a channel *is* writing it into a free
+channel slot (`CMD_SET_CHANNEL`); there is no separate join command. The
+driver picks the first free slot for you and returns the filled `Channel`:
+
+```go
+// create a private channel: random 16-byte key, share it with participants
+ch, err := client.CreatePrivateChannel("Team")
+qr := fmt.Sprintf("meshcore://channel/add?name=%s&secret=%s",
+    url.QueryEscape(ch.Name), hex.EncodeToString(ch.PSK))
+
+// join a private channel from its QR / a friend's message
+secret, _ := hex.DecodeString("<32 hex chars from the QR>")
+ch, err = client.AddChannel("Team", secret) // PSK must be exactly 16 bytes
+
+// the well-known public channel, and a hashtag channel
+client.JoinPublicChannel("")        // alias defaults to "Public" (firmware PSK)
+client.JoinHashtagChannel("#test")  // key = SHA256("#test")[:16], apps-compatible
+
+client.RemoveChannel(ch.Index) // free the slot (empty name + zero key)
+```
+
+Rules worth knowing:
+
+- Channel keys are exactly **16 bytes** (128-bit; the firmware rejects
+  256-bit keys), channel names and contact names are trimmed to **31
+  characters** — same limits as the official apps.
+- `JoinHashtagChannel` derives the key client-side (first 16 bytes of
+  `SHA256("#name")`) — the firmware knows nothing about hashtags, so channels
+  created this way are compatible with the official apps. The leading `#` is
+  optional; the canonical name is stored with it.
+- `OnContactDeleted(func(pubKey []byte))` fires when the **device** removes a
+  contact itself (push `0x8F`, storage-overflow eviction) — use it to keep
+  your bot's database in step. Your own `RemoveContact` calls do not fire it;
+  their result is the returned error.
+- These calls wait for the device reply, so issue no message sends while one
+  is in flight (the same one-thing-at-a-time rule as `RunCLICommand`).
+- To verify what landed, re-read the state: `GetContactByKey`,
+  `GetChannels()` / `RequestChannels(n)`, `RequestContacts(0)`.
+
+**Listing with all details.** `ListContacts()` / `ListChannels()` ask the
+device for the current state first (a full `GET_CONTACTS` iteration / a
+`GET_CHANNEL` sweep over every slot) and return the complete records —
+public keys, PSKs, paths, timestamps — as deep-copied snapshots that are safe
+to mutate, serialize or hand to a UI:
+
+```go
+contacts, err := client.ListContacts() // sorted by name, fresh from the device
+for _, ct := range contacts {
+    fmt.Printf("%-16s %-8s %s\n", ct.Name, ct.TypeName(), ct.PublicKeyHex())
+}
+
+channels, err := client.ListChannels() // every slot by index, empty ones included
+for _, ch := range channels {
+    if ch.IsEmpty {
+        continue
+    }
+    fmt.Printf("[%d] %-20s psk %s hash %02x\n",
+        ch.Index, ch.Name, ch.PSKHex(), ch.HashByte())
+}
+```
+
+The same derived helpers work on any `Contact`/`Channel` value, including the
+ones from `GetContacts()` / `GetChannelByName()`: `PublicKeyHex()`,
+`TypeName()` (chat/repeater/room/sensor), `PSKHex()` and `HashByte()` — the
+1-byte channel hash the firmware uses to address group packets, handy for
+correlating raw `0x88` frames. `GetContacts()`/`GetChannels()` stay the cheap
+cache readers (shared pointers, no device round trip); reach for `List*` when
+the data must be current.
+
+Run [examples/contacts-channels](examples/contacts-channels/main.go) to see
+the whole flow against a real device (create/join, print, then clean up):
+
+```sh
+go run ./examples/contacts-channels -serial /dev/ttyUSB0
+```
+
 ## What it handles
 
 - **Transport** — BLE ([tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)),
@@ -96,6 +201,10 @@ them into separate one-shot commands.)
   packet).
 - **Device CLI** — `RunCLICommand` runs the device's ASCII CLI commands
   (firmware v14+) and returns the reply text.
+- **Contacts & channels administration** — add/remove contacts of every type
+  (chat, repeater, room server, sensor), read one by key, create private
+  channels, join public/hashtag channels, free channel slots (see the section
+  above).
 - **Device clock** — `GetDeviceTime` queries the device RTC (unix seconds,
   returned in UTC).
 - **Adverts / contacts** — self-advert, the contact list and advert stream,

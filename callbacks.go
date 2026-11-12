@@ -17,6 +17,15 @@ func pubKeyHex(key []byte) string {
 func (c *MeshCoreClient) OnContact(f func(*Contact)) {
 	c.onContact = f
 }
+
+// OnContactDeleted вызывается, когда устройство удалило контакт само: push
+// 0x8F (PUSH_CODE_CONTACT_DELETED) приходит при вытеснении контакта при
+// переполнении хранилища. pubKey — полные 32 байта удалённого контакта.
+// Явный RemoveContact этот колбэк не вызывает — его результат и так виден
+// вызывающему.
+func (c *MeshCoreClient) OnContactDeleted(f func(pubKey []byte)) {
+	c.onContactDeleted = f
+}
 func (c *MeshCoreClient) OnAdvert(f func(*Contact)) {
 	c.onAdvert = f
 }
