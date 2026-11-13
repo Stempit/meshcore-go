@@ -97,6 +97,7 @@ type MeshCoreClient struct {
 	onTraceData      func(*TraceData)
 	onChannelData    func(*ChannelDataMessage)
 	onControlData    func(*ControlData)
+	onRawData        func(RawRx)
 
 	// sendMu serializes full send operations (write + confirmation wait).
 	// Only one Send*WithRetry can be in flight at a time.

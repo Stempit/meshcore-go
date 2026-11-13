@@ -151,35 +151,66 @@ func repeatWindowFor(selfInfo *SelfInfo, pktLen int) time.Duration {
 	return w
 }
 
-// rawFramePayload extracts the payload type and payload bytes from a raw RF
-// frame (as carried in a 0x88 LOG_RX_DATA frame), mirroring
-// Dispatcher::tryParsePacket. The path is skipped so repeats with extra path
-// hashes still yield the same payload — and therefore the same packetHash.
-func rawFramePayload(raw []byte) (byte, []byte, bool) {
-	if len(raw) < 2 {
-		return 0, nil, false
+// ParseRawPacket splits a raw RF packet (as carried in a 0x88 LOG_RX_DATA
+// frame) into its parts, mirroring Dispatcher::tryParsePacket:
+//
+//	[header(1)] [transport_codes(4) — only for TRANSPORT routes] [path_len(1)] [path...] [payload...]
+//
+// path_len byte encoding (from Packet.h):
+//
+//	hash_count = path_len & 0x3F   (bits 0–5, number of hops)
+//	hash_size  = (path_len >> 6) + 1  (bits 6–7 → 1, 2, or 3 bytes per hop)
+//
+// It returns the payload type, the path hash bytes (nil when the packet
+// carries no path hashes), the hop count, and the payload bytes — the path is
+// skipped on the way to the payload so repeats with extra path hashes still
+// yield the same payload, and therefore the same packetHash. Like
+// Dispatcher::tryParsePacket, ok is false for packets the firmware would
+// discard: an unsupported payload version (header bits 6–7, only version 1
+// exists today), the reserved path mode 3, a path longer than MAX_PATH_SIZE,
+// and truncated input.
+func ParseRawPacket(data []byte) (ptype byte, path []byte, hops int, payload []byte, ok bool) {
+	if len(data) < 2 {
+		return 0, nil, 0, nil, false
 	}
-	i := 0
-	header := raw[i]
-	i++
-	payloadType := (header >> 2) & 0x0F // PH_TYPE_SHIFT / PH_TYPE_MASK
-	routeType := header & 0x03          // PH_ROUTE_MASK
+	header := data[0]
+	if (header>>6)&0x03 != 0 { // payload version: PAYLOAD_VER_1 (0) is the only one
+		return 0, nil, 0, nil, false
+	}
+	ptype = (header >> 2) & 0x0F // PH_TYPE_SHIFT / PH_TYPE_MASK
+	routeType := header & 0x03   // PH_ROUTE_MASK
+	headerLen := 2
 	// TRANSPORT_FLOOD (0x00) and TRANSPORT_DIRECT (0x03) carry 2×uint16 codes.
 	if routeType == 0x00 || routeType == 0x03 {
-		i += 4
+		headerLen = 6
 	}
-	if i >= len(raw) {
-		return 0, nil, false
+	if len(data) < headerLen {
+		return 0, nil, 0, nil, false
 	}
-	pathLen := raw[i]
-	i++
-	pathHashSize := int(pathLen>>6) + 1 // getPathHashSize
-	pathByteLen := int(pathLen&0x3F) * pathHashSize
-	i += pathByteLen
-	if i > len(raw) {
-		return 0, nil, false
+	pathLenByte := data[headerLen-1]
+	if pathLenByte>>6 == 3 { // path mode 3 is reserved for future use
+		return 0, nil, 0, nil, false
 	}
-	return payloadType, raw[i:], true
+	hops = pathHashCount(pathLenByte)
+	byteLen := pathByteLen(pathLenByte)
+	if byteLen > maxPathSize { // partial or corrupt packet
+		return 0, nil, 0, nil, false
+	}
+	end := headerLen + byteLen
+	if end > len(data) {
+		return 0, nil, 0, nil, false
+	}
+	if hops > 0 {
+		path = data[headerLen:end]
+	}
+	return ptype, path, hops, data[end:], true
+}
+
+// rawFramePayload extracts the payload type and payload bytes from a raw RF
+// frame (as carried in a 0x88 LOG_RX_DATA frame).
+func rawFramePayload(raw []byte) (byte, []byte, bool) {
+	ptype, _, _, payload, ok := ParseRawPacket(raw)
+	return ptype, payload, ok
 }
 
 // channelHashByte returns the 1-byte channel hash (SHA256(PSK)[0]) the firmware

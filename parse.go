@@ -614,6 +614,16 @@ func (c *MeshCoreClient) parseControlData(data []byte) {
 
 func (c *MeshCoreClient) OnControlData(f func(*ControlData)) { c.onControlData = f }
 
+// OnRawData registers a callback for every received raw RF packet (0x88
+// LOG_RX_DATA frame). Unlike the decoded events, these arrive pre-dedup — one
+// per RF reception — so a flood-routed message heard via several repeater
+// chains is delivered once per chain, each RawRx carrying that copy's
+// accumulated path (see ParseRawPacket). Called synchronously on the frame
+// handler goroutine: the callback must be fast and non-blocking. Parsing the
+// frame itself is unaffected; pendingRaw correlation and MQTT publishing run
+// as before regardless of whether a callback is set.
+func (c *MeshCoreClient) OnRawData(f func(RawRx)) { c.onRawData = f }
+
 func (c *MeshCoreClient) parseOk(data []byte) {
 	c.logger.Debug("Received OK")
 	c.notifySent() // для канальных сообщений OK означает принятие команды
@@ -631,6 +641,12 @@ func (c *MeshCoreClient) parseLogRxData(data []byte) {
 	copy(rawData, data[3:])
 
 	c.logger.Debug("Log RX data", "snr", snr, "rssi", rssi, "raw_len", len(rawData))
+
+	// Hand the raw packet to the OnRawData observer (if any) before any
+	// correlation: this is the only place every reception passes through.
+	if c.onRawData != nil {
+		c.onRawData(RawRx{Data: rawData, At: time.Now()})
+	}
 
 	// If a channel send is waiting to hear the mesh rebroadcast its packet,
 	// check this raw frame against it. The firmware emits 0x88 before dedup, so

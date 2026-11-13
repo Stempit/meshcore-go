@@ -406,42 +406,15 @@ func (c *MeshCoreClient) takeChannelRaw(psk []byte) (rawData []byte, snr, rssi f
 	return nil, 0, 0
 }
 
-// extractPathFromRaw parses the path bytes out of a raw RF packet.
-//
-// Wire format (from Packet.cpp writeTo()):
-//
-//	[header(1)] [transport_codes(4) — only for TRANSPORT routes] [path_len(1)] [path...] [payload...]
-//
-// path_len byte encoding (from Packet.h):
-//
-//	hash_count = path_len & 0x3F   (bits 0–5, number of hops)
-//	hash_size  = (path_len >> 6) + 1  (bits 6–7 → 1, 2, or 3 bytes per hop)
-//
-// Returns the raw path bytes and the hop count. Returns nil, 0 when data is
-// too short or contains no hops.
+// extractPathFromRaw parses the path bytes out of a raw RF packet — the path
+// part of ParseRawPacket's result. Returns the raw path bytes and the hop
+// count; nil, 0 when the data is malformed or carries no hops.
 func extractPathFromRaw(data []byte) (pathBytes []byte, hopCount int) {
-	if len(data) < 2 {
+	_, pathBytes, hopCount, _, ok := ParseRawPacket(data)
+	if !ok {
 		return nil, 0
 	}
-	routeType := data[0] & 0x03
-	hasTransportCodes := routeType == 0x00 || routeType == 0x03
-	headerLen := 2
-	if hasTransportCodes {
-		headerLen = 6
-	}
-	if len(data) < headerLen {
-		return nil, 0
-	}
-	pathLenByte := data[headerLen-1]
-	hashCount := pathHashCount(pathLenByte)
-	if hashCount == 0 {
-		return nil, 0
-	}
-	end := headerLen + pathByteLen(pathLenByte)
-	if end > len(data) {
-		return nil, 0
-	}
-	return data[headerLen:end], hashCount
+	return pathBytes, hopCount
 }
 
 // parseContactMessage разбирает сообщение от контакта (код 0x07).

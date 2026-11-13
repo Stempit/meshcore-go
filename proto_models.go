@@ -189,3 +189,14 @@ type ControlData struct {
 	PathLen int
 	Payload []byte
 }
+
+// RawRx holds one received RF packet as heard on air (a 0x88 LOG_RX_DATA
+// frame), before any dedup or correlation: the firmware pushes one of these
+// for every reception, so a flood-routed message heard via several repeater
+// chains arrives here several times with a different accumulated path each
+// time. Data is the raw packet bytes: [header][transport_codes?][path_len]
+// [path][payload]; parse it with ParseRawPacket.
+type RawRx struct {
+	Data []byte
+	At   time.Time
+}
